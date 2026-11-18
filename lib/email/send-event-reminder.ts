@@ -1,6 +1,5 @@
 import { render } from "@react-email/render";
-import { Resend } from "resend";
-import { emailFrom, resendApiKey } from "@/lib/supabase/env";
+import { sendResendEmail } from "@/lib/email/transport";
 import EventReminderEmail, { type EventReminderEmailProps } from "@/emails/event-reminder";
 
 export interface SendEventReminderInput extends EventReminderEmailProps {
@@ -12,9 +11,7 @@ export async function sendEventReminderEmail(input: SendEventReminderInput) {
   const { to, ...templateProps } = input;
   const html = await render(EventReminderEmail(templateProps));
 
-  const resend = new Resend(resendApiKey());
-  await resend.emails.send({
-    from: emailFrom(),
+  return sendResendEmail({
     to,
     subject: `EditFlow · ${templateProps.eventTitle} empieza en ${templateProps.minutesBefore} minutos`,
     html,

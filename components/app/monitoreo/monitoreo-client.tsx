@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 import { Plus, Trash2, Link2, ExternalLink, Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -334,9 +334,21 @@ function LinkCell({
   );
 }
 
+type OptimisticVideoPatch =
+  | { type: "patch"; id: string; changes: Partial<VideoRow> }
+  | { type: "remove"; id: string };
+
 export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miembros, role }: MonitoreoClientProps) {
-  const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [optimisticVideos, applyOptimistic] = useOptimistic(
+    videos,
+    (state: VideoRow[], action: OptimisticVideoPatch) => {
+      if (action.type === "remove") {
+        return state.filter((v) => v.id !== action.id);
+      }
+      return state.map((v) => (v.id === action.id ? { ...v, ...action.changes } : v));
+    },
+  );
 
   // Crear y eliminar: owner/admin/editor (el editor solo ve/elimina sus
   // propios videos, lo acota RLS). El viewer es solo lectura.
@@ -348,8 +360,8 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
   // estado, observaciones y link procesado.
   const soloEstado = role === "editor";
 
-  const miembroPorId = new Map(miembros.map((m) => [m.id, m]));
-  const responsables = miembros.filter((m) => m.role !== "viewer");
+  const miembroPorId = useMemo(() => new Map(miembros.map((m) => [m.id, m])), [miembros]);
+  const responsables = useMemo(() => miembros.filter((m) => m.role !== "viewer"), [miembros]);
 
   const [nuevoOpen, setNuevoOpen] = useState(false);
   const [nuevoTitulo, setNuevoTitulo] = useState("");
@@ -362,29 +374,32 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
   const [videoAEliminar, setVideoAEliminar] = useState<VideoRow | null>(null);
 
   // Alerta de estancamiento: si un video lleva más de 1 hora en edición sin
-  // que su % avance, suena la alerta y sale un aviso. Se revisa al abrir y
-  // cada minuto. Se avisa una sola vez por "episodio" (si vuelve a avanzar y
-  // luego se estanca de nuevo, alerta otra vez).
+  // que su % avance, suena la alerta y sale un aviso. Diferimos 1.2s el
+  // chequeo inicial para no competir con la navegación o los primeros clics.
   const alertadosRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    const enEdicion = videos.filter((v) => v.status === "edicion" && v.progreso < 100);
+    if (enEdicion.length === 0) return;
+
     function revisar() {
       const ahora = Date.now();
-      for (const v of videos) {
+      for (const v of enEdicion) {
         const base = v.progreso_actualizado ?? v.progreso_inicio;
         const minutos = base ? (ahora - new Date(base).getTime()) / 60000 : 0;
-        const estancado = v.status === "edicion" && v.progreso < 100 && base !== null && minutos >= 60;
+        const estancado = base !== null && minutos >= 60;
         if (estancado && !alertadosRef.current.has(v.id)) {
           alertadosRef.current.add(v.id);
-          // La alerta sale en la campanita (con sonido de alerta): registramos
-          // la notificación y el NotificationBell la muestra y la suena.
           void registrarAlertaVideo(v.id, "video_estancado");
         }
         if (!estancado) alertadosRef.current.delete(v.id);
       }
     }
-    revisar();
-    const t = setInterval(revisar, 60_000);
-    return () => clearInterval(t);
+    const initTimer = setTimeout(revisar, 1200);
+    const interval = setInterval(revisar, 60_000);
+    return () => {
+      clearTimeout(initTimer);
+      clearInterval(interval);
+    };
   }, [videos]);
 
   function handleCrear(e: React.FormEvent) {
@@ -401,12 +416,12 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
         priority: nuevaPrioridad,
       });
       if (result.ok) {
+        markLocalMutation();
         toast.success("Video registrado");
         setNuevoOpen(false);
         setNuevoTitulo("");
         setNuevoInicio(undefined);
         setNuevaEntrega(undefined);
-        router.refresh();
       } else {
         toast.error(result.error);
       }
@@ -415,37 +430,43 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
 
   function handleCambiarEstado(video: VideoRow, status: VideoStatus) {
     startTransition(async () => {
+      applyOptimistic({ type: "patch", id: video.id, changes: { status } });
       const result = await updateVideo({ id: video.id, status });
-      if (result.ok) router.refresh();
+      if (result.ok) markLocalMutation();
       else toast.error(result.error);
     });
   }
 
   function handleCambiarEncargado(video: VideoRow, editorId: string) {
+    const resolvedEditorId = editorId === "sin_asignar" ? null : editorId;
     startTransition(async () => {
-      const result = await updateVideo({ id: video.id, editorId: editorId === "sin_asignar" ? null : editorId });
-      if (result.ok) router.refresh();
+      applyOptimistic({ type: "patch", id: video.id, changes: { editor_id: resolvedEditorId } });
+      const result = await updateVideo({ id: video.id, editorId: resolvedEditorId });
+      if (result.ok) markLocalMutation();
       else toast.error(result.error);
     });
   }
 
   function handleCambiarFecha(video: VideoRow, campo: "startDate" | "dueDate", fecha: Date) {
+    const iso = toISODate(fecha);
+    const dbKey = campo === "startDate" ? "start_date" : "due_date";
     startTransition(async () => {
-      const result = await updateVideo({ id: video.id, [campo]: toISODate(fecha) });
-      if (result.ok) router.refresh();
+      applyOptimistic({ type: "patch", id: video.id, changes: { [dbKey]: iso } });
+      const result = await updateVideo({ id: video.id, [campo]: iso });
+      if (result.ok) markLocalMutation();
       else toast.error(result.error);
     });
   }
 
   function handleCambiarProgreso(video: VideoRow, progreso: number) {
     startTransition(async () => {
+      applyOptimistic({ type: "patch", id: video.id, changes: { progreso } });
       const result = await updateVideo({ id: video.id, progreso });
       if (result.ok) {
+        markLocalMutation();
         if (progreso >= 100) {
-          // El "llegó al 100%" sale en la campanita (con sonido de check).
           void registrarAlertaVideo(video.id, "video_completado");
         }
-        router.refresh();
       } else {
         toast.error(result.error);
       }
@@ -453,21 +474,25 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
   }
 
   function handleCambiarLink(video: VideoRow, link: string) {
+    const processedLink = link || null;
     startTransition(async () => {
-      const result = await updateVideo({ id: video.id, processedLink: link || null });
-      if (result.ok) router.refresh();
+      applyOptimistic({ type: "patch", id: video.id, changes: { processed_link: processedLink } });
+      const result = await updateVideo({ id: video.id, processedLink });
+      if (result.ok) markLocalMutation();
       else toast.error(result.error);
     });
   }
 
   function handleEliminar() {
     if (!videoAEliminar) return;
+    const targetId = videoAEliminar.id;
+    setVideoAEliminar(null);
     startTransition(async () => {
-      const result = await deleteVideo(videoAEliminar.id);
+      applyOptimistic({ type: "remove", id: targetId });
+      const result = await deleteVideo(targetId);
       if (result.ok) {
+        markLocalMutation();
         toast.success("Video eliminado");
-        setVideoAEliminar(null);
-        router.refresh();
       } else {
         toast.error(result.error);
       }
@@ -518,7 +543,7 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
               </tr>
             </thead>
             <tbody>
-              {videos.map((video) => {
+              {optimisticVideos.map((video) => {
                 const estilo = ESTADOS[video.status];
                 return (
                   <tr key={video.id} className="border-b last:border-b-0 hover:bg-muted/30">
@@ -530,7 +555,6 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
                         <Select
                           value={video.editor_id ?? "sin_asignar"}
                           onValueChange={(v) => handleCambiarEncargado(video, v)}
-                          disabled={isPending}
                         >
                           <SelectTrigger size="sm" className="h-7 border-none bg-transparent px-1.5">
                             <Avatar miembro={miembroPorId.get(video.editor_id ?? "")} />
@@ -557,7 +581,6 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
                         <Select
                           value={video.status}
                           onValueChange={(v) => handleCambiarEstado(video, v as VideoStatus)}
-                          disabled={isPending}
                         >
                           <SelectTrigger size="sm" className="h-7 border-none bg-transparent px-1.5">
                             <span className="flex items-center gap-1.5">
@@ -587,7 +610,7 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
                       <ProgresoCell
                         video={video}
                         onChange={(p) => handleCambiarProgreso(video, p)}
-                        disabled={!puedeEditar || isPending}
+                        disabled={!puedeEditar}
                       />
                     </td>
                     <td className="px-3 py-2">
@@ -616,7 +639,7 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
                       <LinkCell
                         video={video}
                         onSave={(link) => handleCambiarLink(video, link)}
-                        disabled={!puedeEditar || isPending}
+                        disabled={!puedeEditar}
                       />
                     </td>
                     {puedeEliminar && (
@@ -634,7 +657,7 @@ export function MonitoreoClient({ periodId, periodLabel, videos, clientes, miemb
                   </tr>
                 );
               })}
-              {videos.length === 0 && (
+              {optimisticVideos.length === 0 && (
                 <tr>
                   <td colSpan={colSpan} className="px-3 py-8 text-center text-sm text-muted-foreground">
                     Todavía no hay videos registrados este mes.

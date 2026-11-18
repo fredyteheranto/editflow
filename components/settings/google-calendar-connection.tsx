@@ -53,7 +53,7 @@ export function GoogleCalendarConnection({
             <CalendarCheck2 className="size-4" />
           </div>
           <div>
-            <p className="text-sm font-medium">Google Calendar + Gmail</p>
+            <p className="text-sm font-medium">Google Calendar y Meet</p>
             {connected ? (
               <p className="text-xs text-muted-foreground">
                 Conectado como <span className="font-medium text-foreground">{googleEmail}</span>

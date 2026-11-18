@@ -126,7 +126,10 @@ function SeccionEnVivo({
     return () => clearInterval(t);
   }, [videos]);
 
-  const nombrePorId = new Map(miembros.map((m) => [m.id, m.full_name || m.email]));
+  const nombrePorId = useMemo(
+    () => new Map(miembros.map((m) => [m.id, m.full_name || m.email])),
+    [miembros],
+  );
 
   function duracionVideo(v: VideoEnVivo): { texto: string; enCurso: boolean } | null {
     if (v.status === "edicion" && v.progreso_inicio) {
@@ -167,8 +170,7 @@ function SeccionEnVivo({
       ...r,
       promedio: r.durs.length ? Math.round(r.durs.reduce((a, b) => a + b, 0) / r.durs.length) : null,
     }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videos]);
+  }, [videos, nombrePorId]);
 
   if (videos.length === 0) {
     return (

@@ -11,6 +11,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { emailAssetBaseUrl } from "@/lib/email/transport";
 
 export interface PasswordResetEmailProps {
   resetUrl: string;
@@ -18,13 +19,13 @@ export interface PasswordResetEmailProps {
 
 export default function PasswordResetEmail({ resetUrl }: PasswordResetEmailProps) {
   return (
-    <Html>
+    <Html lang="es">
       <Head />
       <Preview>Restablece tu contraseña de EditFlow. El enlace caduca en una hora.</Preview>
       <Body style={main}>
         <Container style={container}>
           <Img
-            src="https://editflow-gules.vercel.app/logo-mark.png"
+            src={`${emailAssetBaseUrl()}/logo-mark.png`}
             width="32"
             height="32"
             alt="EditFlow"

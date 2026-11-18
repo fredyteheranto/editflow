@@ -11,6 +11,7 @@ import {
   Text,
 } from "@react-email/components";
 import type { DigestKpi } from "@/emails/daily-digest";
+import { emailAssetBaseUrl } from "@/lib/email/transport";
 
 export interface DigestRankingRow {
   name: string;
@@ -43,7 +44,7 @@ export default function WeeklyDigestEmail({
       <Body style={main}>
         <Container style={container}>
           <Img
-            src="https://editflow-gules.vercel.app/logo-mark.png"
+            src={`${emailAssetBaseUrl()}/logo-mark.png`}
             width="32"
             height="32"
             alt="EditFlow"

@@ -1,14 +1,13 @@
-import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization } from "@/lib/period/resolve";
+import { createClient, getServerUser } from "@/lib/supabase/server";
+import { requireModuleAccess } from "@/lib/period/resolve";
 import { EquipoClient } from "@/components/app/equipo/equipo-client";
 
 export default async function EquipoPage() {
-  const org = await requireActiveOrganization();
+  const [{ organization: org, permissions }, user] = await Promise.all([
+    requireModuleAccess("equipo"),
+    getServerUser(),
+  ]);
   const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
   const [{ data: miembros }, { data: invitaciones }] = await Promise.all([
     supabase
@@ -26,7 +25,8 @@ export default async function EquipoPage() {
       .order("created_at", { ascending: false }),
   ]);
 
-  const puedeGestionar = org.role === "owner" || org.role === "admin";
+  const puedeGestionar =
+    (org.role === "owner" || org.role === "admin") && permissions.canInviteMembers;
 
   return (
     <EquipoClient

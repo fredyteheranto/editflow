@@ -1,6 +1,5 @@
 import { render } from "@react-email/render";
-import { Resend } from "resend";
-import { emailFrom, resendApiKey } from "@/lib/supabase/env";
+import { sendResendEmail } from "@/lib/email/transport";
 import MonthCloseReminderEmail, {
   type MonthCloseReminderEmailProps,
 } from "@/emails/month-close-reminder";
@@ -13,9 +12,7 @@ export async function sendMonthCloseReminderEmail(input: SendMonthCloseReminderI
   const { to, ...templateProps } = input;
   const html = await render(MonthCloseReminderEmail(templateProps));
 
-  const resend = new Resend(resendApiKey());
-  await resend.emails.send({
-    from: emailFrom(),
+  return sendResendEmail({
     to,
     subject: `EditFlow · ${templateProps.periodLabel} cierra en ${templateProps.diasRestantes} días`,
     html,

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization } from "@/lib/period/resolve";
+import { requireActiveOrganization, getEffectiveRolePermissions } from "@/lib/period/resolve";
 import { CREATE_CLIENT_SCHEMA } from "@/lib/validations/client";
 
 export interface ClientSummary {
@@ -30,6 +30,11 @@ export async function registerClient(
   periodId: string,
   formData: FormData,
 ): Promise<ActionResult> {
+  const perms = await getEffectiveRolePermissions();
+  if (!perms.canCreateClients) {
+    return { ok: false, error: "Tu rol no tiene permiso para crear clientes." };
+  }
+
   const raw = Object.fromEntries(formData.entries());
   const parsed = CREATE_CLIENT_SCHEMA.safeParse({
     ...raw,

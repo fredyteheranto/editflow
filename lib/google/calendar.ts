@@ -139,11 +139,11 @@ export interface GoogleMeetingResult extends GoogleCalendarEventResult {
 }
 
 /**
- * Crea UNA reunión en el calendario del organizador (el creador) con todos
- * los invitados como asistentes y, si se pide, un enlace de Google Meet. El
- * evento aparece en el calendario de cada asistente, pero NO se manda la
- * invitación por correo desde Google (sendUpdates=none): el correo lo manda
- * EditFlow con su propia marca y asunto. Devuelve también el hangoutLink.
+ * Crea UNA reunión en el calendario del organizador con todos los invitados
+ * como asistentes y, si se pide, un enlace de Google Meet. Con asistentes,
+ * usa sendUpdates=all para que Google agregue el evento en su calendario y
+ * les envíe la invitación oficial de Meet, además de la notificación por correo
+ * de EditFlow. Devuelve también el hangoutLink.
  */
 export async function createGoogleMeetingEvent(
   organizerMembershipId: string,
@@ -168,7 +168,8 @@ export async function createGoogleMeetingEvent(
     };
   }
 
-  const res = await fetch(`${GOOGLE_CALENDAR_EVENTS_URL}?sendUpdates=none&conferenceDataVersion=1`, {
+  const sendUpdates = event.attendeeEmails.length > 0 ? "all" : "none";
+  const res = await fetch(`${GOOGLE_CALENDAR_EVENTS_URL}?sendUpdates=${sendUpdates}&conferenceDataVersion=1`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -183,7 +184,16 @@ export async function createGoogleMeetingEvent(
   }
 
   const data = await res.json();
-  return { googleEventId: data.id, htmlLink: data.htmlLink, meetLink: data.hangoutLink ?? null };
+  const videoEntryUrl = Array.isArray(data.conferenceData?.entryPoints)
+    ? data.conferenceData.entryPoints.find(
+        (ep: { entryPointType?: string; uri?: string }) => ep.entryPointType === "video" && ep.uri,
+      )?.uri
+    : undefined;
+  return {
+    googleEventId: data.id,
+    htmlLink: data.htmlLink,
+    meetLink: data.hangoutLink ?? videoEntryUrl ?? null,
+  };
 }
 
 /**

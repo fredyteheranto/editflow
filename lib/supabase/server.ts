@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "@/types/database.types";
@@ -56,3 +57,15 @@ export function createServiceRoleClient() {
     },
   });
 }
+
+/**
+ * Usuario autenticado memoizado por request HTTP (React.cache) para evitar
+ * múltiples viajes de red a Supabase Auth entre Layout y Page en la misma navegación.
+ */
+export const getServerUser = cache(async () => {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+});

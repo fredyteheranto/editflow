@@ -8,10 +8,12 @@ import {
   Users,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { requireModuleAccess, resolveActivePeriod } from "@/lib/period/resolve";
 import { Button } from "@/components/ui/button";
 import { ImportSheet } from "@/components/dashboard/import-sheet";
+import { GoogleErrorAlert } from "@/components/shared/google-error-alert";
 import { formatDateEs } from "@/lib/utils/dates";
+import type { AppModuleKey } from "@/lib/platform/types";
 
 interface KpiCard {
   key: string;
@@ -31,21 +33,29 @@ const KPI_CARDS: KpiCard[] = [
   { key: "cumplimiento_global", label: "% Cumplimiento", suffix: "%" },
 ];
 
-const MODULOS = [
-  { href: "/app/clientes", label: "Clientes", icon: Users, desc: "clientes activos este mes" },
-  { href: "/app/monitoreo", label: "Monitoreo", icon: ClipboardList, desc: "videos en curso" },
-  { href: "/app/calendario", label: "Calendario", icon: CalendarDays, desc: "próximo evento" },
-  { href: "/app/metricas", label: "Métricas", icon: LineChart, desc: "cumplimiento del mes" },
+const MODULOS: {
+  key: AppModuleKey;
+  href: string;
+  label: string;
+  icon: typeof Users;
+  desc: string;
+}[] = [
+  { key: "clientes", href: "/app/clientes", label: "Clientes", icon: Users, desc: "clientes activos este mes" },
+  { key: "monitoreo", href: "/app/monitoreo", label: "Monitoreo", icon: ClipboardList, desc: "videos en curso" },
+  { key: "calendario", href: "/app/calendario", label: "Calendario", icon: CalendarDays, desc: "próximo evento" },
+  { key: "metricas", href: "/app/metricas", label: "Métricas", icon: LineChart, desc: "cumplimiento del mes" },
 ];
 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ google_error?: string }>;
+  searchParams: Promise<{ google_error?: string; google_error_detail?: string }>;
 }) {
-  const { google_error: googleError } = await searchParams;
-  const organization = await requireActiveOrganization();
+  const [{ google_error: googleError, google_error_detail: googleErrorDetail }, { organization, permissions }] =
+    await Promise.all([searchParams, requireModuleAccess("dashboard")]);
   const puedeGestionar = organization.role === "owner" || organization.role === "admin";
+  const canUseMonitoreo = permissions.modules.includes("monitoreo");
+  const visibleModules = MODULOS.filter((m) => permissions.modules.includes(m.key));
   const activePeriod = await resolveActivePeriod(organization.id);
   const supabase = await createClient();
 
@@ -90,19 +100,7 @@ export default async function DashboardPage({
 
   return (
     <div className="space-y-6">
-      {googleError === "email_mismatch" && (
-        <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-          <p>
-            No se conectó Google Calendar/Gmail porque elegiste una cuenta distinta al correo con el
-            que ingresas a EditFlow. Puedes intentarlo de nuevo desde{" "}
-            <Link href="/app/configuracion" className="font-medium underline underline-offset-2">
-              Configuración
-            </Link>
-            .
-          </p>
-        </div>
-      )}
+      <GoogleErrorAlert error={googleError} detail={googleErrorDetail} />
 
       <div className="flex items-center justify-between">
         <div>
@@ -113,12 +111,14 @@ export default async function DashboardPage({
         </div>
         <div className="flex items-center gap-2">
           {puedeGestionar && <ImportSheet />}
-          <Button asChild>
-            <Link href="/app/monitoreo?nuevo=1">
-              <Plus className="size-4" />
-              Nuevo video
-            </Link>
-          </Button>
+          {canUseMonitoreo && (
+            <Button asChild>
+              <Link href="/app/monitoreo?nuevo=1">
+                <Plus className="size-4" />
+                Nuevo video
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -144,7 +144,7 @@ export default async function DashboardPage({
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="grid gap-4 sm:grid-cols-2 lg:col-span-2">
-          {MODULOS.map(({ href, label, icon: Icon, desc }) => (
+          {visibleModules.map(({ href, label, icon: Icon, desc }) => (
             <Link
               key={href}
               href={href}

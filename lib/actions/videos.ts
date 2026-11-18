@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
-import { requireActiveOrganization } from "@/lib/period/resolve";
+import { requireActiveOrganization, getEffectiveRolePermissions } from "@/lib/period/resolve";
 import type { Database, VideoPriority, VideoStatus } from "@/types/database.types";
 
 type VideoUpdate = Database["public"]["Tables"]["videos"]["Update"];
@@ -19,9 +19,36 @@ export interface CreateVideoInput {
   priority?: VideoPriority;
 }
 
+async function getNextVideoSeq(
+  organizationId: string,
+  periodId: string,
+  clientId: string,
+): Promise<{ seq: number; error: string | null }> {
+  // Se consulta con service role porque las políticas RLS (videos_select_own)
+  // ocultan al rol 'editor' los videos de otros miembros. Si no se pasa un seq
+  // explícito, el trigger set_video_seq() calcula max(seq)+1 bajo RLS y
+  // colisiona con el índice único (period_id, client_id, seq).
+  const admin = createServiceRoleClient();
+  const { data, error } = await admin
+    .from("videos")
+    .select("seq")
+    .eq("organization_id", organizationId)
+    .eq("period_id", periodId)
+    .eq("client_id", clientId)
+    .order("seq", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return { seq: 0, error: error.message };
+  }
+
+  return { seq: (data?.seq ?? 0) + 1, error: null };
+}
+
 export async function createVideo(input: CreateVideoInput): Promise<VideoActionResult> {
-  const org = await requireActiveOrganization();
-  if (org.role === "viewer") {
+  const [org, perms] = await Promise.all([requireActiveOrganization(), getEffectiveRolePermissions()]);
+  if (org.role === "viewer" || !perms.canCreateVideos) {
     return { ok: false, error: "No tienes permiso para registrar videos." };
   }
   if (!input.title.trim()) {
@@ -35,20 +62,45 @@ export async function createVideo(input: CreateVideoInput): Promise<VideoActionR
   if (!editorId && org.role === "editor") editorId = org.membershipId;
 
   const supabase = await createClient();
-  const { error } = await supabase.from("videos").insert({
-    organization_id: org.id,
-    period_id: input.periodId,
-    client_id: input.clientId,
-    title: input.title.trim(),
-    editor_id: editorId,
-    start_date: input.startDate || null,
-    due_date: input.dueDate || null,
-    priority: input.priority ?? "media",
-  });
+  const MAX_SEQ_ATTEMPTS = 4;
 
-  if (error) return { ok: false, error: error.message };
-  revalidatePath("/app/monitoreo");
-  return { ok: true };
+  for (let attempt = 0; attempt < MAX_SEQ_ATTEMPTS; attempt += 1) {
+    const seqResult = await getNextVideoSeq(org.id, input.periodId, input.clientId);
+    if (seqResult.error || seqResult.seq < 1) {
+      return {
+        ok: false,
+        error: seqResult.error ?? "No se pudo calcular el consecutivo del video.",
+      };
+    }
+
+    const { error } = await supabase.from("videos").insert({
+      organization_id: org.id,
+      period_id: input.periodId,
+      client_id: input.clientId,
+      seq: seqResult.seq,
+      title: input.title.trim(),
+      editor_id: editorId,
+      start_date: input.startDate || null,
+      due_date: input.dueDate || null,
+      priority: input.priority ?? "media",
+    });
+
+    if (!error) {
+      revalidatePath("/app/monitoreo");
+      revalidatePath("/app/dashboard");
+      revalidatePath("/app/calendario");
+      return { ok: true };
+    }
+
+    const isSeqConflict =
+      error.code === "23505" ||
+      error.message.includes("videos_period_id_client_id_seq_key");
+    if (!isSeqConflict || attempt === MAX_SEQ_ATTEMPTS - 1) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  return { ok: false, error: "No se pudo asignar un consecutivo único para el video." };
 }
 
 export interface UpdateVideoInput {
@@ -135,37 +187,35 @@ export async function registrarAlertaVideo(
 
   const admin = createServiceRoleClient();
 
-  // Dedupe: no repetir la misma alerta de este video dentro de la última hora.
+  // Dedupe + destinatarios en paralelo para reducir latencia.
   const haceUnaHora = new Date(Date.now() - 55 * 60_000).toISOString();
-  const { data: reciente } = await admin
-    .from("notifications")
-    .select("id")
-    .eq("organization_id", org.id)
-    .eq("type", tipo)
-    .eq("title", title)
-    .gte("created_at", haceUnaHora)
-    .limit(1)
-    .maybeSingle();
+  const [{ data: reciente }, { data: gestores }, { data: editor }] = await Promise.all([
+    admin
+      .from("notifications")
+      .select("id")
+      .eq("organization_id", org.id)
+      .eq("type", tipo)
+      .eq("title", title)
+      .gte("created_at", haceUnaHora)
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from("memberships")
+      .select("id, email")
+      .eq("organization_id", org.id)
+      .eq("active", true)
+      .in("role", ["owner", "admin"]),
+    video.editor_id
+      ? admin.from("memberships").select("id, email, active").eq("id", video.editor_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+
   if (reciente) return { ok: true };
 
   // Destinatarios: owner/admin (monitorean) + el editor encargado, sin repetir.
   const destinatarios = new Map<string, string>();
-  const { data: gestores } = await admin
-    .from("memberships")
-    .select("id, email")
-    .eq("organization_id", org.id)
-    .eq("active", true)
-    .in("role", ["owner", "admin"]);
   for (const g of gestores ?? []) destinatarios.set(g.id, g.email);
-
-  if (video.editor_id) {
-    const { data: editor } = await admin
-      .from("memberships")
-      .select("id, email, active")
-      .eq("id", video.editor_id)
-      .maybeSingle();
-    if (editor?.active) destinatarios.set(editor.id, editor.email);
-  }
+  if (editor?.active) destinatarios.set(editor.id, editor.email);
 
   if (destinatarios.size === 0) return { ok: true };
 
@@ -185,10 +235,10 @@ export async function registrarAlertaVideo(
 }
 
 export async function deleteVideo(videoId: string): Promise<VideoActionResult> {
-  const org = await requireActiveOrganization();
-  // owner/admin eliminan cualquier video; el editor solo los suyos (lo aplica
-  // la policy RLS videos_delete). El viewer no puede eliminar.
-  if (org.role === "viewer") {
+  const [org, perms] = await Promise.all([requireActiveOrganization(), getEffectiveRolePermissions()]);
+  // owner/admin eliminan cualquier video; el editor solo los suyos si la
+  // configuración de permisos se lo permite. El viewer no puede eliminar.
+  if (org.role === "viewer" || (org.role === "editor" && !perms.canDeleteOwnVideos)) {
     return { ok: false, error: "No tienes permiso para eliminar videos." };
   }
 

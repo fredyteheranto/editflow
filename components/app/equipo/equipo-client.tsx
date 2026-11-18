@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Copy, Mail, Trash2, UserPlus, X } from "lucide-react";
+import { Copy, Mail, Send, Trash2, UserPlus, X } from "lucide-react";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -32,7 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createInvitation, revokeInvitation } from "@/lib/actions/invitations";
+import { createInvitation, resendInvitation, revokeInvitation } from "@/lib/actions/invitations";
 import { updateMemberRole, removeMember } from "@/lib/actions/memberships";
 import type { MemberRole } from "@/types/database.types";
 
@@ -96,7 +96,6 @@ export function EquipoClient({
   currentUserEmail,
   puedeGestionar,
 }: EquipoClientProps) {
-  const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
   const [invitarOpen, setInvitarOpen] = useState(false);
@@ -106,24 +105,32 @@ export function EquipoClient({
 
   const [miembroAEliminar, setMiembroAEliminar] = useState<Miembro | null>(null);
 
+  const spamHint = "Dile a tu invitado que verifique también la carpeta de spam o correo no deseado.";
+
   function handleInvitar(e: React.FormEvent) {
     e.preventDefault();
     if (!inviteEmail.trim() || !inviteNombre.trim()) return;
     startTransition(async () => {
       const result = await createInvitation(organizationId, inviteEmail, inviteRole, inviteNombre);
       if (result.ok) {
+        markLocalMutation();
         const correo = inviteEmail.trim();
         setInvitarOpen(false);
         setInviteEmail("");
         setInviteNombre("");
-        router.refresh();
         if (result.emailSent) {
-          toast.success(`Invitación enviada por correo a ${correo}.`);
+          toast.success(`Invitación enviada por correo a ${correo}.`, {
+            description: spamHint,
+            duration: 8000,
+          });
         } else {
           copyToClipboard(
             result.link,
-            "Invitación creada — el link ya está copiado, compártelo con la persona.",
+            "Invitación creada — el correo no se pudo enviar; el link quedó copiado para compartirlo.",
           );
+          if (result.emailError) {
+            toast.warning("Detalle del envío de correo", { description: result.emailError });
+          }
         }
       } else {
         toast.error(result.error);
@@ -134,7 +141,7 @@ export function EquipoClient({
   function handleCambiarRol(miembro: Miembro, role: MemberRole) {
     startTransition(async () => {
       const result = await updateMemberRole(miembro.id, role);
-      if (result.ok) router.refresh();
+      if (result.ok) markLocalMutation();
       else toast.error(result.error);
     });
   }
@@ -144,9 +151,9 @@ export function EquipoClient({
     startTransition(async () => {
       const result = await removeMember(miembroAEliminar.id);
       if (result.ok) {
+        markLocalMutation();
         toast.success("Miembro removido del equipo");
         setMiembroAEliminar(null);
-        router.refresh();
       } else {
         toast.error(result.error);
       }
@@ -157,10 +164,34 @@ export function EquipoClient({
     startTransition(async () => {
       const result = await revokeInvitation(invitacion.id);
       if (result.ok) {
+        markLocalMutation();
         toast.success("Invitación revocada");
-        router.refresh();
       } else {
         toast.error(result.error);
+      }
+    });
+  }
+
+  function handleReenviar(invitacion: Invitacion) {
+    startTransition(async () => {
+      const result = await resendInvitation(invitacion.id);
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      if (result.emailSent) {
+        toast.success(`Correo de invitación reenviado a ${invitacion.email}.`, {
+          description: spamHint,
+          duration: 8000,
+        });
+      } else {
+        copyToClipboard(
+          result.link,
+          "No se pudo enviar el correo — el link quedó copiado para compartirlo.",
+        );
+        if (result.emailError) {
+          toast.warning("Detalle del envío", { description: result.emailError });
+        }
       }
     });
   }
@@ -253,6 +284,7 @@ export function EquipoClient({
       {puedeGestionar && invitaciones.length > 0 && (
         <div className="rounded-xl border bg-card p-4">
           <h3 className="text-sm font-semibold">Invitaciones pendientes</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{spamHint}</p>
           <div className="mt-3 space-y-2">
             {invitaciones.map((inv) => (
               <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border p-2.5">
@@ -264,6 +296,16 @@ export function EquipoClient({
                   </Badge>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    title="Reenviar invitación por correo"
+                    onClick={() => handleReenviar(inv)}
+                    disabled={isPending}
+                  >
+                    <Send className="size-3.5" />
+                  </Button>
                   <Button
                     type="button"
                     size="icon-sm"
@@ -336,8 +378,8 @@ export function EquipoClient({
               </Select>
             </div>
             <p className="text-xs text-muted-foreground">
-              Como todavía no hay envío de correo automático configurado, al crear la invitación el link se copia
-              solo — compártelo tú directamente con la persona.
+              Enviaremos un correo con el enlace de invitación para que cree su cuenta o inicie sesión
+              y entre al equipo. {spamHint}
             </p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setInvitarOpen(false)}>

@@ -73,7 +73,7 @@ export function CookieBanner() {
               Cookies y Tratamiento de Datos Personales
             </p>
             <p>
-              Usamos cookies esenciales para tu sesión segura (Google, Facebook o correo) y cookies
+              Usamos cookies esenciales para tu sesión segura (Google o correo) y cookies
               de preferencias (tema y periodo activo). Al continuar, aceptas nuestra{" "}
               <Link href="/privacidad" className="text-primary underline underline-offset-2">
                 Política de Privacidad

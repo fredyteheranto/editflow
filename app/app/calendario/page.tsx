@@ -1,9 +1,19 @@
-import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { createClient, getServerUser } from "@/lib/supabase/server";
+import { requireModuleAccess, resolveActivePeriod } from "@/lib/period/resolve";
 import { CalendarioClient } from "@/components/app/calendario/calendario-client";
+import { GoogleErrorAlert } from "@/components/shared/google-error-alert";
 
-export default async function CalendarioPage() {
-  const org = await requireActiveOrganization();
+export default async function CalendarioPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ google_error?: string; google_error_detail?: string }>;
+}) {
+  const [{ google_error: googleError, google_error_detail: googleErrorDetail }, { organization: org }, user] =
+    await Promise.all([
+      searchParams,
+      requireModuleAccess("calendario"),
+      getServerUser(),
+    ]);
   const activePeriod = await resolveActivePeriod(org.id);
   const supabase = await createClient();
 
@@ -23,8 +33,18 @@ export default async function CalendarioPage() {
       .eq("organization_id", org.id)
       .eq("active", true)
       .order("full_name"),
-    supabase.from("google_oauth_tokens").select("google_email").eq("membership_id", org.membershipId).maybeSingle(),
+    supabase
+      .from("google_oauth_tokens")
+      .select("google_email, refresh_token, expires_at")
+      .eq("membership_id", org.membershipId)
+      .maybeSingle(),
   ]);
+
+  const googleConectado = Boolean(
+    googleConnection &&
+      (googleConnection.refresh_token ||
+        new Date(googleConnection.expires_at).getTime() > Date.now()),
+  );
 
   const puedeEditar = org.role === "owner" || org.role === "admin";
   const ownerMembership = (miembros ?? []).find((m) => m.role === "owner");
@@ -48,10 +68,19 @@ export default async function CalendarioPage() {
   const asignadoPorEvento: Record<string, string> = {};
   const invitadosPorEvento: Record<string, string[]> = {};
   for (const row of attendeeRows ?? []) {
-    if (row.membership_id && row.membership_id !== ownerMembership?.id) {
+    if (
+      row.membership_id &&
+      row.membership_id !== ownerMembership?.id &&
+      !asignadoPorEvento[row.event_id]
+    ) {
       asignadoPorEvento[row.event_id] = row.membership_id;
+      continue;
     }
-    if (!row.membership_id && row.email) {
+    if (
+      row.email &&
+      row.membership_id !== ownerMembership?.id &&
+      row.membership_id !== asignadoPorEvento[row.event_id]
+    ) {
       invitadosPorEvento[row.event_id] = [...(invitadosPorEvento[row.event_id] ?? []), row.email];
     }
   }
@@ -59,27 +88,35 @@ export default async function CalendarioPage() {
   const conMeetPorEvento: Record<string, boolean> = {};
   const meetUrlPorEvento: Record<string, string> = {};
   for (const row of meetingRows ?? []) {
-    if (row.meeting_url) {
+    if (row.meeting_url && !row.meeting_url.includes("meet.jit.si")) {
       conMeetPorEvento[row.id] = true;
       meetUrlPorEvento[row.id] = row.meeting_url;
     }
   }
 
   return (
-    <CalendarioClient
-      periodId={activePeriod?.id ?? null}
-      periodLabel={activePeriod?.label ?? null}
-      year={activePeriod?.year ?? hoy.getFullYear()}
-      month={activePeriod?.month ?? hoy.getMonth() + 1}
-      timezone={org.timezone}
-      eventos={eventos ?? []}
-      miembros={miembros ?? []}
-      asignadoPorEvento={asignadoPorEvento}
-      invitadosPorEvento={invitadosPorEvento}
-      conMeetPorEvento={conMeetPorEvento}
-      meetUrlPorEvento={meetUrlPorEvento}
-      googleConectado={Boolean(googleConnection)}
-      puedeEditar={puedeEditar}
-    />
+    <div className="flex flex-1 flex-col gap-4">
+      <GoogleErrorAlert
+        error={googleError}
+        detail={googleErrorDetail}
+        accountEmail={user?.email ?? undefined}
+      />
+      <CalendarioClient
+        periodId={activePeriod?.id ?? null}
+        periodLabel={activePeriod?.label ?? null}
+        year={activePeriod?.year ?? hoy.getFullYear()}
+        month={activePeriod?.month ?? hoy.getMonth() + 1}
+        timezone={org.timezone}
+        eventos={eventos ?? []}
+        miembros={miembros ?? []}
+        asignadoPorEvento={asignadoPorEvento}
+        invitadosPorEvento={invitadosPorEvento}
+        conMeetPorEvento={conMeetPorEvento}
+        meetUrlPorEvento={meetUrlPorEvento}
+        googleConectado={googleConectado}
+        accountEmail={user?.email ?? undefined}
+        puedeEditar={puedeEditar}
+      />
+    </div>
   );
 }

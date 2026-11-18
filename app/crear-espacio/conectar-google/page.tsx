@@ -2,58 +2,83 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Loader2 } from "lucide-react";
+import Image from "next/image";
+import { AlertTriangle, CalendarCheck2, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { startGoogleConnect } from "@/lib/google/start-connect";
 
 /**
- * Paso obligatorio del onboarding, automático: a cualquiera que crea su
- * cuenta (por link mágico o por Google sin haber otorgado los permisos de
- * Calendar/Gmail en el mismo signup) createOrganization lo manda acá en vez
- * de directo al dashboard. Dispara el consentimiento de Google apenas
- * carga la página, sin esperar un clic — así las invitaciones, recordatorios
- * y notificaciones por correo quedan listos desde el primer momento.
+ * Paso opcional de onboarding para conectar Google Calendar + Gmail.
+ * Ya no dispara la redirección automática al cargar la página para evitar
+ * atrapar registros nuevos si el usuario cancela o si la verificación OAuth
+ * en Google Cloud está pendiente.
  */
 export default function ConectarGooglePage() {
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    startGoogleConnect("/app/dashboard").then((result) => {
-      if (result.error) setError(result.error);
-    });
+    const params = new URLSearchParams(window.location.search);
+    const googleError = params.get("google_error");
+    const detail = params.get("google_error_detail");
+    if (googleError) {
+      setError(
+        detail
+          ? `Google no completó la conexión (${detail}). Puedes omitir este paso y entrar al Dashboard.`
+          : "No se completó la conexión con Google. Puedes entrar al Dashboard y conectarlo después en Configuración.",
+      );
+    }
   }, []);
 
+  async function handleConnect() {
+    setError(null);
+    setConnecting(true);
+    const result = await startGoogleConnect("/app/dashboard");
+    if (result.error) {
+      setError(result.error);
+      setConnecting(false);
+    }
+  }
+
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
-      {!error ? (
-        <>
-          <Loader2 className="size-8 animate-spin text-primary" />
-          <div>
-            <p className="font-medium">Conectando tu cuenta de Google…</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Para que las invitaciones, recordatorios y notificaciones salgan por correo
-              automáticamente.
-            </p>
+    <div className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
+      <Link href="/" className="mb-8 flex items-center gap-2 text-lg font-semibold tracking-tight">
+        <Image src="/logo-mark.png" alt="" width={28} height={28} className="size-7 object-contain" />
+        EditFlow
+      </Link>
+
+      <div className="w-full max-w-md space-y-5 rounded-xl border border-border/70 bg-card/70 p-6 text-center shadow-sm">
+        <div className="mx-auto flex size-11 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <CalendarCheck2 className="size-5" />
+        </div>
+
+        <div className="space-y-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">
+            Conecta Google Calendar y Meet (opcional)
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Activa enlaces automáticos de Google Meet e invitaciones desde tu calendario cuando
+            agendes reuniones en EditFlow. Puedes hacerlo ahora o después.
+          </p>
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-left text-xs text-danger">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <p>{error}</p>
           </div>
-        </>
-      ) : (
-        <>
-          <p className="font-medium text-danger">No se pudo conectar con Google</p>
-          <p className="text-sm text-muted-foreground">{error}</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="text-sm font-medium text-primary underline-offset-2 hover:underline"
-          >
-            Reintentar
-          </button>
-          <Link
-            href="/app/dashboard"
-            className="text-xs text-muted-foreground underline-offset-2 hover:underline"
-          >
-            Omitir por ahora — conectar después desde Configuración
-          </Link>
-        </>
-      )}
+        )}
+
+        <div className="flex flex-col gap-2.5 pt-1">
+          <Button onClick={handleConnect} disabled={connecting} className="w-full gap-2">
+            {connecting ? <Loader2 className="size-4 animate-spin" /> : <CalendarCheck2 className="size-4" />}
+            {connecting ? "Abriendo Google…" : "Conectar Google ahora"}
+          </Button>
+          <Button variant="outline" asChild className="w-full">
+            <Link href="/app/dashboard">Omitir por ahora e ir al Dashboard</Link>
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,10 +1,11 @@
 import Link from "next/link";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/server";
-import { getInvitationByToken } from "@/lib/actions/invitations";
+import { getInvitationByToken, signOutAndReturnToInvite } from "@/lib/actions/invitations";
 import { InviteAuthForm } from "@/components/auth/invite-auth-form";
 import { AcceptInvitationButton } from "@/components/auth/accept-invitation-button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { NOINDEX_ROBOTS } from "@/lib/seo";
 
 export const metadata = {
@@ -60,19 +61,38 @@ export default async function InvitacionPage({
             <p className="mt-2 text-sm text-muted-foreground">
               Como <Badge variant="secondary">{ROLE_LABELS[invitation.role]}</Badge>
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {invitation.fullName ? `${invitation.fullName} · ${invitation.email}` : invitation.email}
+            </p>
 
             <div className="mt-8 text-left">
               {user ? (
                 user.email?.toLowerCase() === invitation.email.toLowerCase() ? (
                   <AcceptInvitationButton token={token} />
                 ) : (
-                  <p className="text-center text-sm text-danger">
-                    Esta invitación es para {invitation.email}, pero iniciaste sesión con{" "}
-                    {user.email ?? "una cuenta sin correo"}.
-                  </p>
+                  <div className="space-y-4 rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
+                    <p className="text-sm text-danger">
+                      Esta invitación es para <strong>{invitation.email}</strong>, pero iniciaste sesión con{" "}
+                      <strong>{user.email ?? "otra cuenta"}</strong>.
+                    </p>
+                    <form
+                      action={async () => {
+                        "use server";
+                        await signOutAndReturnToInvite(token);
+                      }}
+                    >
+                      <Button type="submit" variant="outline" className="w-full">
+                        Cerrar sesión y continuar con {invitation.email}
+                      </Button>
+                    </form>
+                  </div>
                 )
               ) : (
-                <InviteAuthForm token={token} email={invitation.email} />
+                <InviteAuthForm
+                  token={token}
+                  email={invitation.email}
+                  initialName={invitation.fullName ?? undefined}
+                />
               )}
             </div>
           </>

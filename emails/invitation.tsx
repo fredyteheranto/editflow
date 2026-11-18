@@ -11,6 +11,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { emailAssetBaseUrl } from "@/lib/email/transport";
 
 export interface InvitationEmailProps {
   organizationName: string;
@@ -26,7 +27,7 @@ export default function InvitationEmail({
   inviteUrl,
 }: InvitationEmailProps) {
   return (
-    <Html>
+    <Html lang="es">
       <Head />
       <Preview>
         {inviterName} te invitó a {organizationName} en EditFlow. Entra con tu enlace para empezar.
@@ -34,7 +35,7 @@ export default function InvitationEmail({
       <Body style={main}>
         <Container style={container}>
           <Img
-            src="https://editflow-gules.vercel.app/logo-mark.png"
+            src={`${emailAssetBaseUrl()}/logo-mark.png`}
             width="32"
             height="32"
             alt="EditFlow"

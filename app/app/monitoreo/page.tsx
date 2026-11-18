@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { requireModuleAccess, resolveActivePeriod } from "@/lib/period/resolve";
 import { MonitoreoClient } from "@/components/app/monitoreo/monitoreo-client";
 
 export default async function MonitoreoPage() {
-  const org = await requireActiveOrganization();
+  const { organization: org } = await requireModuleAccess("monitoreo");
   const activePeriod = await resolveActivePeriod(org.id);
   const supabase = await createClient();
 

@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { requireModuleAccess, resolveActivePeriod } from "@/lib/period/resolve";
 import { MetricasClient } from "@/components/app/metricas/metricas-client";
 
 export default async function MetricasPage() {
-  const org = await requireActiveOrganization();
+  const { organization: org } = await requireModuleAccess("metricas");
   const activePeriod = await resolveActivePeriod(org.id);
   const supabase = await createClient();
 

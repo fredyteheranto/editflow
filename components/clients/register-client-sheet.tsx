@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { registerClient, type ActionResult } from "@/lib/actions/clients";
 import { ClientBriefFields } from "@/components/clients/client-brief-fields";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 
 const INITIAL_STATE: ActionResult = { ok: true };
 
@@ -37,7 +38,10 @@ export function RegisterClientSheet({
   const [open, setOpen] = useState(false);
   const [state, formAction] = useActionState(async (_prev: ActionResult, fd: FormData) => {
     const result = await registerClient(organizationId, periodId, fd);
-    if (result.ok) setOpen(false);
+    if (result.ok) {
+      markLocalMutation();
+      setOpen(false);
+    }
     return result;
   }, INITIAL_STATE);
 

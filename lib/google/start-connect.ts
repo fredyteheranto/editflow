@@ -1,15 +1,14 @@
 import { createClient } from "@/lib/supabase/client";
 
 const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
-const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 
 /**
- * Arranca el OAuth de Google pidiendo Calendar + Gmail send, y vuelve a
- * /auth/callback?...&google_calendar=1 (que guarda el token vía
- * saveGoogleCalendarConnection). Si Google es la única identidad de la
- * cuenta usa signInWithOAuth (no se puede desvincular); si hay otra
- * identidad (correo/contraseña) usa linkIdentity, desvinculando primero
- * cualquier Google viejo para poder re-pedir el consentimiento.
+ * Arranca el OAuth de Google pidiendo Google Calendar (calendar.events), y
+ * vuelve a /auth/callback?...&google_calendar=1 (que guarda el token vía
+ * saveGoogleCalendarConnection). Si la cuenta ya tiene identidad de Google
+ * vinculada usa signInWithOAuth para re-solicitar permisos sin romper la
+ * identidad si el usuario cancela; si solo tiene correo/contraseña usa
+ * linkIdentity.
  */
 export async function startGoogleConnect(
   nextPath: string,
@@ -23,7 +22,7 @@ export async function startGoogleConnect(
   }
 
   const oauthOptions = {
-    scopes: `${CALENDAR_SCOPE} ${GMAIL_SEND_SCOPE}`,
+    scopes: CALENDAR_SCOPE,
     queryParams: {
       access_type: "offline",
       prompt: "consent",
@@ -38,20 +37,25 @@ export async function startGoogleConnect(
   }
 
   const todas = identidades?.identities ?? [];
-  const googleIdentity = todas.find((i: { provider: string; }) => i.provider === "google");
-  const tieneOtraIdentidad = todas.some((i: { provider: string; }) => i.provider !== "google");
+  const googleIdentity = todas.find((i: { provider: string }) => i.provider === "google");
 
   let error: { message: string } | null = null;
 
-  if (googleIdentity && !tieneOtraIdentidad) {
+  if (googleIdentity) {
     ({ error } = await supabase.auth.signInWithOAuth({ provider: "google", options: oauthOptions }));
   } else {
-    if (googleIdentity) {
-      const { error: unlinkError } = await supabase.auth.unlinkIdentity(googleIdentity);
-      if (unlinkError) return { error: unlinkError.message };
-    }
     ({ error } = await supabase.auth.linkIdentity({ provider: "google", options: oauthOptions }));
   }
 
-  return error ? { error: error.message } : {};
+  if (error) {
+    if (/manual linking/i.test(error.message)) {
+      return {
+        error:
+          "Falta activar «Manual Linking» en Supabase Auth -> Settings para vincular Google a cuentas creadas con correo.",
+      };
+    }
+    return { error: error.message };
+  }
+
+  return {};
 }

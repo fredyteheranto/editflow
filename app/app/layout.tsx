@@ -1,8 +1,19 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
-import { listPeriods, requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { createClient, getServerUser } from "@/lib/supabase/server";
+import {
+  getEffectiveRolePermissions,
+  listPeriods,
+  requireActiveOrganization,
+  resolveActivePeriod,
+} from "@/lib/period/resolve";
+import { getPlatformConfig } from "@/lib/platform/config";
+import { isCurrentUserSuperAdmin } from "@/lib/platform/auth";
+import { DittoRoleBridge } from "@/components/ditto/ditto-context";
+import { signOutAction } from "@/lib/actions/auth";
+import { ShieldAlert } from "lucide-react";
 import { currentYearMonthInTimezone } from "@/lib/utils/dates";
 import { AppSidebar } from "@/components/shared/app-sidebar";
+import { GoogleConnectBanner } from "@/components/shared/google-connect-banner";
 import { RealtimeRefresher } from "@/components/app/realtime-refresher";
 import { PeriodSwitcher } from "@/components/period/period-switcher";
 import { OpenCurrentMonthBanner } from "@/components/period/open-current-month-banner";
@@ -25,42 +36,85 @@ export const revalidate = 0;
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const organization = await requireActiveOrganization();
-  const periods = await listPeriods(organization.id);
-  const activePeriod = await resolveActivePeriod(organization.id);
-
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  const { data: perfil } = await supabase
-    .from("memberships")
-    .select("full_name, avatar_url")
-    .eq("id", organization.membershipId)
-    .maybeSingle();
 
-  const memberName =
-    perfil?.full_name ?? (user?.user_metadata?.full_name as string | undefined) ?? user?.email ?? "Usuario";
+  const [
+    periods,
+    activePeriod,
+    { data: notificaciones },
+    platformConfig,
+    isSuperAdmin,
+    permissions,
+    { data: googleToken },
+    user,
+  ] = await Promise.all([
+    listPeriods(organization.id),
+    resolveActivePeriod(organization.id),
+    supabase
+      .from("notifications")
+      .select("id, title, body, link, read_at, created_at, type")
+      .eq("membership_id", organization.membershipId)
+      .order("created_at", { ascending: false })
+      .limit(30),
+    getPlatformConfig(),
+    isCurrentUserSuperAdmin(),
+    getEffectiveRolePermissions(),
+    supabase
+      .from("google_oauth_tokens")
+      .select("membership_id, refresh_token, expires_at")
+      .eq("membership_id", organization.membershipId)
+      .maybeSingle(),
+    getServerUser(),
+  ]);
 
-  const { data: notificaciones } = await supabase
-    .from("notifications")
-    .select("id, title, body, link, read_at, created_at, type")
-    .eq("membership_id", organization.membershipId)
-    .order("created_at", { ascending: false })
-    .limit(30);
+  if (platformConfig.site.maintenanceMode && !isSuperAdmin) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+          <ShieldAlert className="size-6" />
+        </div>
+        <h1 className="text-xl font-semibold">EditFlow en mantenimiento</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          {platformConfig.site.maintenanceMessage}
+        </p>
+        <form action={signOutAction}>
+          <button
+            type="submit"
+            className="mt-2 rounded-md border px-4 py-2 text-sm hover:bg-muted"
+          >
+            Cerrar sesión
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  const memberName = organization.memberName;
 
   const canManagePeriods = organization.role === "owner" || organization.role === "admin";
 
   const { year: currentYear, month: currentMonth } = currentYearMonthInTimezone(organization.timezone);
   const currentMonthOpen = periods.some((p) => p.year === currentYear && p.month === currentMonth);
+  const banner = platformConfig.site.announcementBanner;
+
+  const googleMissing = !googleToken;
+  const googleExpired =
+    Boolean(googleToken) &&
+    !googleToken?.refresh_token &&
+    new Date(googleToken!.expires_at).getTime() <= Date.now();
+  const needsGoogleConnect = googleMissing || googleExpired;
 
   return (
     <SidebarProvider>
+      <DittoRoleBridge role={isSuperAdmin ? "super_admin" : organization.role} />
       <RealtimeRefresher organizationId={organization.id} />
       <AppSidebar
         memberName={memberName}
-        avatarUrl={perfil?.avatar_url ?? null}
+        avatarUrl={organization.avatarUrl}
         membershipId={organization.membershipId}
         notificaciones={notificaciones ?? []}
+        allowedModules={permissions.modules}
+        isSuperAdmin={isSuperAdmin}
       />
       <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4">
@@ -76,11 +130,41 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               Mes cerrado — solo lectura
             </span>
           )}
-          <ThemeToggle className="ml-auto" />
+          <div className="ml-auto flex items-center gap-2">
+            <ThemeToggle />
+          </div>
         </header>
+
+        {banner.enabled && banner.text.trim() && (
+          <div
+            className={`flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 text-xs ${
+              banner.tone === "warning"
+                ? "bg-warning/15 text-warning"
+                : banner.tone === "success"
+                  ? "bg-success/15 text-success"
+                  : "bg-primary/10 text-primary"
+            }`}
+          >
+            <span>{banner.text}</span>
+            {banner.linkHref && banner.linkLabel && (
+              <Link href={banner.linkHref} className="font-semibold underline underline-offset-2">
+                {banner.linkLabel}
+              </Link>
+            )}
+          </div>
+        )}
 
         {!currentMonthOpen && canManagePeriods && (
           <OpenCurrentMonthBanner organizationId={organization.id} year={currentYear} month={currentMonth} />
+        )}
+
+        {needsGoogleConnect && (
+          <GoogleConnectBanner
+            accountEmail={user?.email ?? undefined}
+            role={organization.role}
+            reason={googleExpired ? "expired" : "not_connected"}
+            canOpenSettings={permissions.modules.includes("configuracion")}
+          />
         )}
 
         {!activePeriod ? (

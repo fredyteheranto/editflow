@@ -6,7 +6,7 @@ import { buildPageMetadata } from "@/lib/seo";
 export const metadata = buildPageMetadata({
   title: "Política de Privacidad y Tratamiento de Datos",
   description:
-    "Política de Privacidad, uso de cookies, integración de Google/Facebook y tratamiento de datos personales de EditFlow.",
+    "Política de Privacidad, uso de cookies, integración de Google y tratamiento de datos personales de EditFlow.",
   path: "/privacidad",
 });
 
@@ -36,8 +36,7 @@ export default function PrivacidadPage() {
           <p className="mt-2">Al usar EditFlow guardamos:</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>
-              Datos de cuenta: nombre, correo y foto de perfil (si inicias sesión con Google o
-              Facebook).
+              Datos de cuenta: nombre, correo y foto de perfil (si inicias sesión con Google).
             </li>
             <li>
               Datos que tú o tu equipo ingresan: clientes, briefs, videos, estados de edición,
@@ -52,28 +51,26 @@ export default function PrivacidadPage() {
 
         <section>
           <h2 className="text-base font-semibold text-foreground">
-            3. Uso de los datos de Google (Calendar y Gmail)
+            3. Uso de los datos de Google (Sign-In y Google Calendar)
           </h2>
           <p className="mt-2">
-            EditFlow pide permiso explícito de Google para dos cosas, siempre con tu
-            consentimiento y siempre en tu propia cuenta de Google (nunca en una ajena):
+            EditFlow solicita permiso explícito de Google únicamente para las funciones que tú
+            autorizas, y siempre sobre tu propia cuenta de Google (nunca sobre una ajena):
           </p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>
-              <strong className="text-foreground">Google Calendar</strong> (
-              <code className="text-xs">calendar.events</code>): lee los eventos de tu calendario
-              que contienen la palabra clave &quot;Flow&quot; en el título o la descripción, y los
-              refleja dentro de EditFlow (reuniones, grabaciones, entregas). También crea/actualiza
-              eventos en tu calendario cuando programas algo desde EditFlow. No leemos ni
-              modificamos ningún otro evento de tu calendario.
+              <strong className="text-foreground">Inicio de sesión con Google</strong> (
+              <code className="text-xs">openid email profile</code>): usamos tu nombre, correo y
+              foto de perfil para autenticarte de forma segura en EditFlow.
             </li>
             <li>
-              <strong className="text-foreground">Gmail</strong> (
-              <code className="text-xs">gmail.send</code>): nos permite mandar, desde tu propia
-              bandeja de salida, los correos que tú generas dentro de la app — invitaciones a tu
-              equipo, recordatorios de eventos y resúmenes de actividad. EditFlow nunca lee tu
-              bandeja de entrada ni tus correos existentes: este permiso solo sirve para enviar, no
-              para leer.
+              <strong className="text-foreground">Google Calendar</strong> (
+              <code className="text-xs">calendar.events</code>): lee únicamente los eventos de tu
+              calendario que contienen la palabra clave &quot;Flow&quot; en el título o la
+              descripción, y los refleja dentro de EditFlow (reuniones, grabaciones, entregas).
+              También crea o actualiza eventos y enlaces de Google Meet en tu calendario cuando
+              programas una reunión desde EditFlow. No leemos ni modificamos ningún otro evento
+              de tu calendario, ni accedemos a tu bandeja de Gmail.
             </li>
           </ul>
           <p className="mt-2">
@@ -105,9 +102,8 @@ export default function PrivacidadPage() {
           <p className="mt-2">
             No vendemos ni compartimos tus datos con terceros para publicidad. Los únicos
             proveedores que procesan datos en nuestro nombre son: Supabase (base de datos y
-            autenticación), Vercel (hosting), Resend (envío de correo transaccional), Google
-            (autenticación y, con tu conexión explícita, Calendar/Gmail) y Meta/Facebook
-            (únicamente si eliges iniciar sesión con Facebook).
+            autenticación), Vercel (hosting), Resend (envío de correo transaccional) y Google
+            (autenticación y, con tu conexión explícita, Calendar/Gmail).
           </p>
         </section>
 
@@ -122,7 +118,7 @@ export default function PrivacidadPage() {
           <ul className="mt-2 list-disc space-y-1 pl-5">
             <li>
               <strong className="text-foreground">Cookies técnicas esenciales</strong>: necesarias
-              para mantener tu sesión autenticada con Supabase (correo, Google o Facebook) y
+              para mantener tu sesión autenticada con Supabase (correo o Google) y
               proteger el flujo OAuth.
             </li>
             <li>

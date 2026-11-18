@@ -1,6 +1,6 @@
 import { Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization, resolveActivePeriod } from "@/lib/period/resolve";
+import { requireModuleAccess, resolveActivePeriod } from "@/lib/period/resolve";
 import { ComingSoon } from "@/components/shared/coming-soon";
 import { RegisterClientSheet } from "@/components/clients/register-client-sheet";
 import { ActivateExistingClient } from "@/components/clients/activate-existing-client";
@@ -8,7 +8,7 @@ import { ClientGrid } from "@/components/clients/client-grid";
 import type { ClientFull } from "@/components/clients/edit-client-sheet";
 
 export default async function ClientesPage() {
-  const organization = await requireActiveOrganization();
+  const { organization, permissions } = await requireModuleAccess("clientes");
   const activePeriod = await resolveActivePeriod(organization.id);
 
   if (!activePeriod) {
@@ -54,14 +54,16 @@ export default async function ClientesPage() {
           <p className="text-sm text-muted-foreground">{activePeriod.label}</p>
         </div>
         <div className="flex gap-2">
-          {canManage && (
+          {canManage && permissions.canCreateClients && (
             <ActivateExistingClient
               organizationId={organization.id}
               periodId={activePeriod.id}
               candidates={inactiveClients}
             />
           )}
-          <RegisterClientSheet organizationId={organization.id} periodId={activePeriod.id} />
+          {permissions.canCreateClients && (
+            <RegisterClientSheet organizationId={organization.id} periodId={activePeriod.id} />
+          )}
         </div>
       </div>
 

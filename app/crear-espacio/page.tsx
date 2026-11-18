@@ -2,6 +2,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { AccountForm } from "@/components/auth/account-form";
 import { LegalLinks } from "@/components/shared/legal-links";
+import { getPlatformConfig } from "@/lib/platform/config";
 import { NOINDEX_ROBOTS } from "@/lib/seo";
 
 export const metadata = {
@@ -9,12 +10,18 @@ export const metadata = {
   robots: NOINDEX_ROBOTS,
 };
 
+export const dynamic = "force-dynamic";
+
 export default async function CrearEspacioPage({
   searchParams,
 }: PageProps<"/crear-espacio">) {
-  const params = await searchParams;
+  const [params, config] = await Promise.all([
+    searchParams,
+    getPlatformConfig(),
+  ]);
   const modo = params.modo === "acceso" ? "acceso" : "iniciar";
   const next = typeof params.next === "string" ? params.next : "/crear-espacio/espacio";
+  const signupClosed = !config.permissions.allowSelfSignup && modo === "iniciar";
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
@@ -34,14 +41,33 @@ export default async function CrearEspacioPage({
         </p>
 
         <div className="mt-8">
-          <AccountForm next={next} modo={modo} />
+          {signupClosed ? (
+            <div className="space-y-4 rounded-xl border bg-card p-5 text-center text-sm">
+              <p className="text-muted-foreground">
+                El registro libre de nuevos espacios está pausado temporalmente por administración.
+                Si ya tienes cuenta o recibiste invitación, inicia sesión.
+              </p>
+              <Link
+                href="/crear-espacio?modo=acceso"
+                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground"
+              >
+                Ya tengo cuenta
+              </Link>
+            </div>
+          ) : (
+            <AccountForm next={next} modo={modo} />
+          )}
         </div>
 
         {params.error === "auth" && (
-          <div className="mt-4 text-center text-sm text-danger">
-            <p>El enlace no es válido o ya expiró. Solicita uno nuevo.</p>
-            {typeof params.error_detail === "string" && (
-              <p className="mt-1 text-xs text-muted-foreground">{params.error_detail}</p>
+          <div className="mt-4 rounded-lg border border-danger/30 bg-danger/5 p-3 text-center text-sm text-danger">
+            {typeof params.error_detail === "string" && params.error_detail.trim().length > 0 ? (
+              <>
+                <p>No se pudo completar el acceso con Google. Puedes ingresar con tu correo abajo.</p>
+                <p className="mt-1 text-xs text-muted-foreground">{params.error_detail}</p>
+              </>
+            ) : (
+              <p>El enlace no es válido o ya expiró. Solicita uno nuevo.</p>
             )}
           </div>
         )}

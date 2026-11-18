@@ -24,7 +24,7 @@ export const NOINDEX_ROBOTS: NonNullable<Metadata["robots"]> = {
 };
 
 /**
- * Resuelve la URL pública base para canonicals, Open Graph (Facebook/Meta),
+ * Resuelve la URL pública base para canonicals, Open Graph (redes sociales),
  * sitemap.xml y robots.txt en local, Vercel o Azure.
  */
 export function getSiteUrl(): string {

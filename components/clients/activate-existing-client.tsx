@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { activateClientInPeriod } from "@/lib/actions/clients";
 import type { ClientSummary } from "@/lib/actions/clients";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 
 export function ActivateExistingClient({
   organizationId,
@@ -29,13 +29,12 @@ export function ActivateExistingClient({
     Object.fromEntries(candidates.map((c) => [c.id, c.default_monthly_goal])),
   );
   const [isPending, startTransition] = useTransition();
-  const router = useRouter();
 
   function handleActivate(clientId: string, goal: number) {
     startTransition(async () => {
       const result = await activateClientInPeriod(organizationId, periodId, clientId, goal, "Productora");
       if (result.ok) {
-        router.refresh();
+        markLocalMutation();
         setOpen(false);
       }
     });

@@ -32,8 +32,8 @@ export function ResetPasswordForm() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!/^\d{4,}$/.test(password)) {
-      toast.error("La contraseña debe ser de al menos 4 dígitos (solo números).");
+    if (password.length < 6) {
+      toast.error("La contraseña debe tener al menos 6 caracteres.");
       return;
     }
     if (password !== confirm) {
@@ -45,7 +45,7 @@ export function ResetPasswordForm() {
         const { error } = await createClient().auth.updateUser({ password });
         if (error) {
           toast.error("No se pudo cambiar la contraseña", {
-            description: "Puede que el enlace haya expirado. Solicita uno nuevo.",
+            description: error.message || "Puede que el enlace haya expirado. Solicita uno nuevo.",
           });
           return;
         }
@@ -62,14 +62,13 @@ export function ResetPasswordForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-4 text-left">
       <div className="space-y-1.5">
-        <Label htmlFor="nueva">Nueva contraseña (mínimo 4 dígitos)</Label>
+        <Label htmlFor="nueva">Nueva contraseña (mínimo 6 caracteres)</Label>
         <Input
           id="nueva"
           type="password"
-          inputMode="numeric"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="••••"
+          placeholder="••••••"
           autoComplete="new-password"
           required
         />
@@ -79,10 +78,9 @@ export function ResetPasswordForm() {
         <Input
           id="confirmar"
           type="password"
-          inputMode="numeric"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
-          placeholder="••••"
+          placeholder="••••••"
           autoComplete="new-password"
           required
         />

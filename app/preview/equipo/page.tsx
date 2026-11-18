@@ -192,9 +192,8 @@ export default function EquipoPreviewPage() {
           <h3 className="text-sm font-semibold">Integraciones</h3>
           <p className="mt-1 text-xs text-muted-foreground">
             Se conecta con el mismo correo con el que el propietario se registró — ese es el
-            administrador. Cada evento nuevo se agenda en su Google Calendar y el aviso sale
-            directo de su bandeja de envío de Gmail: el propietario recibe todos los eventos, cada
-            invitado solo el que le asignaron.
+            administrador. Cada evento nuevo se agenda en su Google Calendar con enlace automático
+            de Google Meet e invitaciones por correo a los asistentes.
           </p>
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 p-3">
             <div className="flex items-center gap-3">
@@ -202,7 +201,7 @@ export default function EquipoPreviewPage() {
                 <CalendarCheck2 className="size-4" />
               </div>
               <div>
-                <p className="text-sm font-medium">Google Calendar + Gmail</p>
+                <p className="text-sm font-medium">Google Calendar y Meet</p>
                 {googleConectado ? (
                   <p className="text-xs text-muted-foreground">
                     Conectado como{" "}

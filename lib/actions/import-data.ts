@@ -80,35 +80,44 @@ export async function importarDatos(rows: ImportRow[]): Promise<ImportResult> {
     new Set(rows.map((r) => r.cliente?.trim()).filter((n): n is string => Boolean(n))),
   );
 
+  // Batch insert de clientes nuevos (1 sola consulta en vez de N consultas en ciclo).
+  const clientesFaltantes = nombresClientes.filter((nombre) => !idPorNombre.has(nombre.toLowerCase()));
   let clientesCreados = 0;
-  let clientesActivados = 0;
 
-  for (const nombre of nombresClientes) {
-    const key = nombre.toLowerCase();
-    if (!idPorNombre.has(key)) {
-      const { data: nuevo, error } = await supabase
-        .from("clients")
-        .insert({ organization_id: org.id, name: nombre })
-        .select("id")
-        .single();
-      if (error || !nuevo) continue;
-      idPorNombre.set(key, nuevo.id);
+  if (clientesFaltantes.length > 0) {
+    const { data: nuevos, error: clientesErr } = await supabase
+      .from("clients")
+      .insert(clientesFaltantes.map((name) => ({ organization_id: org.id, name })))
+      .select("id, name");
+
+    if (clientesErr) {
+      return { ok: false, error: clientesErr.message };
+    }
+    for (const c of nuevos ?? []) {
+      idPorNombre.set(c.name.trim().toLowerCase(), c.id);
       clientesCreados += 1;
     }
-    const clientId = idPorNombre.get(key);
-    if (!clientId) continue;
-    const { error: cpError } = await supabase.from("client_periods").upsert(
-      {
-        organization_id: org.id,
-        period_id: activePeriod.id,
-        client_id: clientId,
-        active: true,
-        monthly_goal: 0,
-        strategist: "Productora",
-      },
-      { onConflict: "period_id,client_id" },
-    );
-    if (!cpError) clientesActivados += 1;
+  }
+
+  // Batch upsert en client_periods (1 sola consulta para activar todos).
+  const periodRows = nombresClientes
+    .map((nombre) => idPorNombre.get(nombre.toLowerCase()))
+    .filter((clientId): clientId is string => Boolean(clientId))
+    .map((client_id) => ({
+      organization_id: org.id,
+      period_id: activePeriod.id,
+      client_id,
+      active: true,
+      monthly_goal: 0,
+      strategist: "Productora",
+    }));
+
+  let clientesActivados = 0;
+  if (periodRows.length > 0) {
+    const { error: cpError } = await supabase
+      .from("client_periods")
+      .upsert(periodRows, { onConflict: "period_id,client_id" });
+    if (!cpError) clientesActivados = periodRows.length;
   }
 
   // Videos.

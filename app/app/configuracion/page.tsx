@@ -1,39 +1,61 @@
-import { AlertTriangle, Settings } from "lucide-react";
-import { ComingSoon } from "@/components/shared/coming-soon";
 import { GoogleCalendarConnection } from "@/components/settings/google-calendar-connection";
+import { PortfolioLandingEditor } from "@/components/settings/portfolio-landing-editor";
 import { ProfileSettings } from "@/components/settings/profile-settings";
-import { createClient } from "@/lib/supabase/server";
-import { requireActiveOrganization } from "@/lib/period/resolve";
+import { GoogleErrorAlert } from "@/components/shared/google-error-alert";
+import { getOrPrepareMyPortfolios } from "@/lib/portfolio/store";
+import { getPlatformConfig } from "@/lib/platform/config";
+import { isCurrentUserSuperAdmin } from "@/lib/platform/auth";
+import { appUrl } from "@/lib/supabase/env";
+import { createClient, getServerUser } from "@/lib/supabase/server";
+import { requireModuleAccess } from "@/lib/period/resolve";
 
 export default async function ConfiguracionPage({
   searchParams,
 }: {
-  searchParams: Promise<{ google_error?: string }>;
+  searchParams: Promise<{ google_error?: string; google_error_detail?: string }>;
 }) {
-  const { google_error: googleError } = await searchParams;
-  const org = await requireActiveOrganization();
+  const [
+    { google_error: googleError, google_error_detail: googleErrorDetail },
+    { organization: org },
+    user,
+    platformConfig,
+    isSuperAdmin,
+  ] = await Promise.all([
+    searchParams,
+    requireModuleAccess("configuracion"),
+    getServerUser(),
+    getPlatformConfig(),
+    isCurrentUserSuperAdmin(),
+  ]);
+  const showPortfolioSection = isSuperAdmin || platformConfig.permissions.publicPortfolios;
   const puedeGestionar = org.role === "owner" || org.role === "admin";
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  // Conexión propia del miembro (migración 0012: 1 fila por membership).
-  const { data: googleConnection } = await supabase
-    .from("google_oauth_tokens")
-    .select("google_email")
-    .eq("membership_id", org.membershipId)
-    .maybeSingle();
-
-  const { data: perfil } = await supabase
-    .from("memberships")
-    .select("full_name, avatar_url, bio, phone")
-    .eq("organization_id", org.id)
-    .eq("user_id", user?.id ?? "")
-    .maybeSingle();
+  const [{ data: googleConnection }, { data: perfil }, { data: orgRow }] = await Promise.all([
+    supabase.from("google_oauth_tokens").select("google_email").eq("membership_id", org.membershipId).maybeSingle(),
+    supabase
+      .from("memberships")
+      .select("full_name, avatar_url, bio, phone")
+      .eq("id", org.membershipId)
+      .maybeSingle(),
+    supabase.from("organizations").select("slug").eq("id", org.id).maybeSingle(),
+  ]);
 
   const miCorreo = user?.email ?? "";
+  const { agencyPortfolio, creatorPortfolio } = user
+    ? await getOrPrepareMyPortfolios({
+        userId: user.id,
+        userEmail: miCorreo,
+        memberName: perfil?.full_name || org.memberName || miCorreo,
+        avatarUrl: perfil?.avatar_url ?? org.avatarUrl,
+        bio: perfil?.bio ?? null,
+        phone: perfil?.phone ?? null,
+        organizationId: org.id,
+        organizationName: org.name,
+        organizationSlug: orgRow?.slug ?? null,
+        canManageAgency: puedeGestionar,
+      })
+    : { agencyPortfolio: null, creatorPortfolio: null };
 
   return (
     <div className="flex flex-1 flex-col gap-6">
@@ -59,18 +81,18 @@ export default async function ConfiguracionPage({
 
         <p className="mt-1 text-xs text-muted-foreground">
           Conecta <span className="font-medium text-foreground">tu cuenta de Google</span> (el
-          mismo correo con el que ingresas a EditFlow). Es la cuenta donde se reflejan tus eventos y
-          reuniones con Meet, y desde la que salen tus notificaciones por correo.
+          mismo correo con el que ingresas a EditFlow). Es la cuenta donde se sincronizan tus
+          eventos y reuniones con Google Meet.
         </p>
 
-        {googleError === "email_mismatch" && (
-          <div className="mt-3 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-            <p>
-              Esa cuenta de Google no es <span className="font-medium">{miCorreo}</span> — el
-              correo con el que ingresas a EditFlow. Elige exactamente esa cuenta para conectar
-              tu Google Calendar y Gmail.
-            </p>
+        {googleError && (
+          <div className="mt-3">
+            <GoogleErrorAlert
+              error={googleError}
+              detail={googleErrorDetail}
+              accountEmail={miCorreo}
+              showSettingsLink={false}
+            />
           </div>
         )}
 
@@ -91,11 +113,15 @@ export default async function ConfiguracionPage({
         )}
       </section>
 
-      <ComingSoon
-        icon={Settings}
-        title="Configuración"
-        description="Aquí vivirá la gestión de la organización, zona horaria, periodos y estrategas frecuentes. Próxima fase de construcción."
-      />
+      {showPortfolioSection && creatorPortfolio && (
+        <section className="rounded-xl border border-border/70 bg-card/60 p-5">
+          <PortfolioLandingEditor
+            agencyPortfolio={agencyPortfolio}
+            creatorPortfolio={creatorPortfolio}
+            appBaseUrl={appUrl()}
+          />
+        </section>
+      )}
     </div>
   );
 }

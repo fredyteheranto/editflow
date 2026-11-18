@@ -6,7 +6,7 @@ import { buildPageMetadata } from "@/lib/seo";
 export const metadata = buildPageMetadata({
   title: "Condiciones del Servicio",
   description:
-    "Condiciones del Servicio, uso de cuentas, roles e integraciones de Google y Facebook en EditFlow.",
+    "Condiciones del Servicio, uso de cuentas, roles e integración con Google en EditFlow.",
   path: "/terminos",
 });
 
@@ -49,11 +49,11 @@ export default function TerminosPage() {
         </section>
 
         <section>
-          <h2 className="text-base font-semibold text-foreground">4. Conexión con Google y Facebook</h2>
+          <h2 className="text-base font-semibold text-foreground">4. Conexión con Google</h2>
           <p className="mt-2">
-            Puedes iniciar sesión con correo, Google o Facebook. Conectar tu cuenta de Google
-            (Calendar y Gmail) es opcional y puedes desconectarla cuando quieras desde
-            Configuración. El detalle de qué hacemos con esos datos y permisos está en la{" "}
+            Puedes iniciar sesión con correo o con Google. Conectar tu cuenta de Google
+            Calendar es opcional y puedes desconectarla cuando quieras desde
+            la aplicación. El detalle de qué hacemos con esos datos y permisos está en la{" "}
             <Link href="/privacidad" className="text-primary underline-offset-2 hover:underline">Política de Privacidad</Link>{" "}
             y en el{" "}
             <Link href="/privacidad#tratamiento-datos" className="text-primary underline-offset-2 hover:underline">Tratamiento de Datos Personales</Link>.

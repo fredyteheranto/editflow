@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ClipboardList,
   LineChart,
+  ShieldCheck,
   Sparkles,
   Users,
   Zap,
@@ -26,40 +27,27 @@ import { Parallax } from "@/components/marketing/parallax";
 import { ScrollReveal } from "@/components/marketing/scroll-reveal";
 import { MiniClientes, MiniMonitoreo, MiniCalendario, MiniMetricas } from "@/components/marketing/mini-module-previews";
 import { LegalLinks } from "@/components/shared/legal-links";
-import { SITE_DESCRIPTION, SITE_NAME, SITE_TITLE, getSiteUrl } from "@/lib/seo";
+import { InstallAppButton } from "@/components/pwa/pwa-install";
+import { getPlatformConfig } from "@/lib/platform/config";
+import { SITE_NAME, getSiteUrl } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: { absolute: SITE_TITLE },
-  description: SITE_DESCRIPTION,
-  alternates: { canonical: "/" },
-};
+export const dynamic = "force-dynamic";
 
-const MODULOS = [
-  {
-    icon: Users,
-    titulo: "Clientes",
-    descripcion: "El brief completo de cada cliente y su meta de videos del mes, siempre a mano.",
-    Preview: MiniClientes,
-  },
-  {
-    icon: ClipboardList,
-    titulo: "Monitoreo",
-    descripcion: "Registra cada video, su editor y su estado. Todo se calcula solo, en vivo.",
-    Preview: MiniMonitoreo,
-  },
-  {
-    icon: CalendarDays,
-    titulo: "Calendario",
-    descripcion: "Reuniones, grabaciones y entregas en un solo calendario con recordatorios por correo.",
-    Preview: MiniCalendario,
-  },
-  {
-    icon: LineChart,
-    titulo: "Métricas",
-    descripcion: "Compara meses, mide a cada editor y exporta el informe de cada cliente.",
-    Preview: MiniMetricas,
-  },
-];
+export async function generateMetadata(): Promise<Metadata> {
+  const config = await getPlatformConfig();
+  return {
+    title: { absolute: config.site.seoTitle },
+    description: config.site.seoDescription,
+    alternates: { canonical: "/" },
+  };
+}
+
+const MODULE_VISUALS = {
+  clientes: { icon: Users, Preview: MiniClientes },
+  monitoreo: { icon: ClipboardList, Preview: MiniMonitoreo },
+  calendario: { icon: CalendarDays, Preview: MiniCalendario },
+  metricas: { icon: LineChart, Preview: MiniMetricas },
+} as const;
 
 const PASOS = [
   { numero: "01", titulo: "Crea tu espacio", descripcion: "Con tu nombre y tu correo, en menos de un minuto." },
@@ -79,33 +67,6 @@ interface Vitrina {
   // vez de comprimida a la mitad del contenedor.
   wide?: boolean;
 }
-
-const FAQS = [
-  {
-    pregunta: "¿Reemplaza por completo nuestro Google Sheet?",
-    respuesta:
-      "Sí. Cliente, editor, estado y % de avance de cada video quedan en una sola tabla que se actualiza sola — nadie tiene que abrir un Sheet aparte para saber qué falta.",
-  },
-  {
-    pregunta: "¿Cómo funciona la integración con Google Calendar y Gmail?",
-    respuesta:
-      "Conectas exactamente el correo con el que te registraste. Desde ahí, cada evento que agendas en EditFlow se crea en tu Google Calendar y el aviso se envía desde tu propia bandeja de Gmail — al dueño siempre, y al encargado asignado.",
-  },
-  {
-    pregunta: "¿Qué pasa con los videos que no llegan a \"Aprobado\" cuando cierra el mes?",
-    respuesta:
-      "Nunca se pierden. Pendiente, en edición o en revisión pasan solos al día 1 del mes siguiente. Solo lo que quedó \"Aprobado\" se congela en el histórico.",
-  },
-  {
-    pregunta: "¿Necesito tarjeta para crear mi espacio?",
-    respuesta: "No. Creas tu espacio con tu nombre y tu correo en menos de un minuto, sin tarjeta y sin contraseña que memorizar.",
-  },
-  {
-    pregunta: "¿Puedo invitar a mi equipo de editores y estrategas?",
-    respuesta:
-      "Sí. Cada miembro entra con su propio rol: el editor actualiza el % de avance de sus videos, el estratega gestiona clientes, y tú ves todo desde el dashboard.",
-  },
-];
 
 const VITRINAS: Vitrina[] = [
   {
@@ -135,18 +96,25 @@ const VITRINAS: Vitrina[] = [
   },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
   const siteUrl = getSiteUrl();
+  const config = await getPlatformConfig();
+  const { home, site } = config;
+  const modulos = home.modules.map((m) => ({
+    ...m,
+    ...MODULE_VISUALS[m.key],
+  }));
+
   const structuredData = [
     {
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
-      name: SITE_NAME,
+      name: site.brandName || SITE_NAME,
       applicationCategory: "BusinessApplication",
       operatingSystem: "Web",
       inLanguage: "es",
       url: siteUrl,
-      description: SITE_DESCRIPTION,
+      description: site.seoDescription,
       offers: {
         "@type": "Offer",
         price: "0",
@@ -161,7 +129,7 @@ export default function HomePage() {
     {
       "@context": "https://schema.org",
       "@type": "FAQPage",
-      mainEntity: FAQS.map((faq) => ({
+      mainEntity: home.faqs.map((faq) => ({
         "@type": "Question",
         name: faq.pregunta,
         acceptedAnswer: {
@@ -188,11 +156,12 @@ export default function HomePage() {
             <Image src="/logo-editflow.png" alt="EditFlow" width={376} height={116} priority className="h-8 w-auto" />
           </Link>
           <nav className="flex items-center gap-3">
+            <InstallAppButton variant="header" />
             <Button variant="ghost" className="rounded-full" asChild>
-              <Link href="/crear-espacio?modo=acceso">Ya tengo cuenta</Link>
+              <Link href="/crear-espacio?modo=acceso">{home.heroSecondaryCta}</Link>
             </Button>
             <Button asChild className="glow-primary rounded-full bg-white px-5 text-violet-900 hover:bg-white/90 active:scale-95 active:bg-primary active:text-primary-foreground">
-              <Link href="/crear-espacio">Iniciar</Link>
+              <Link href="/crear-espacio">{home.heroPrimaryCta}</Link>
             </Button>
           </nav>
         </div>
@@ -219,15 +188,15 @@ export default function HomePage() {
             <Reveal>
               <Badge className="mb-6 gap-1.5 border border-primary/30 bg-primary/10 text-primary backdrop-blur">
                 <Sparkles className="size-3.5" />
-                Hecho para productoras y agencias de contenido
+                {home.heroBadge}
               </Badge>
               <h1 className="text-balance font-heading text-5xl font-bold tracking-tight sm:text-6xl">
-                Una sola plataforma para <span className="text-gradient glow-text italic">todo</span> tu
-                equipo de edición
+                {home.heroTitlePrefix}
+                <span className="text-gradient glow-text italic">{home.heroTitleHighlight}</span>
+                {home.heroTitleSuffix}
               </h1>
               <p className="mt-6 text-balance text-lg text-muted-foreground">
-                Reemplaza el Google Sheet manual: controla qué video edita cada editor, en qué
-                estado va, cuándo se entrega y cuánto contenido le diste a cada cliente.
+                {home.heroSubtitle}
               </p>
               <div className="mt-10 flex flex-wrap items-center gap-3">
                 <Button
@@ -237,7 +206,7 @@ export default function HomePage() {
                 >
                   <Link href="/crear-espacio">
                     <span className="pointer-events-none absolute inset-y-0 left-0 w-1/3 -skew-x-[20deg] bg-violet-900/10 opacity-0 group-hover:opacity-100 group-hover:[animation:btn-shine_0.9s_ease-out]" />
-                    Iniciar
+                    {home.heroPrimaryCta}
                     <ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-1" />
                   </Link>
                 </Button>
@@ -247,7 +216,7 @@ export default function HomePage() {
                   className="h-auto rounded-full border-border/80 px-8 py-4 text-base backdrop-blur transition-shadow hover:border-primary/50 hover:shadow-[0_0_24px_-6px_var(--primary)]"
                   asChild
                 >
-                  <Link href="/crear-espacio?modo=acceso">Ya tengo cuenta</Link>
+                  <Link href="/crear-espacio?modo=acceso">{home.heroSecondaryCta}</Link>
                 </Button>
               </div>
             </Reveal>
@@ -272,11 +241,11 @@ export default function HomePage() {
                 Módulos
               </span>
               <h2 className="mt-2 font-heading text-3xl font-semibold tracking-tight">
-                ¿Qué hace EditFlow?
+                {home.modulesIntroTitle}
               </h2>
             </Reveal>
             <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              {MODULOS.map(({ icon: Icon, titulo, descripcion, Preview }, i) => (
+              {modulos.map(({ icon: Icon, titulo, descripcion, Preview }, i) => (
                 <ScrollReveal key={titulo} delay={i * 110}>
                   <TiltCard className="group relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card/60 p-5 backdrop-blur transition-colors hover:border-primary/50">
                     <div className="pointer-events-none absolute -right-8 -top-8 size-28 rounded-full bg-primary/0 blur-2xl transition-all group-hover:bg-primary/25" />
@@ -414,7 +383,7 @@ export default function HomePage() {
             </Reveal>
             <Reveal delay={100} className="mt-10">
               <Accordion type="single" collapsible className="rounded-2xl border border-border/70 bg-card/50 px-6 backdrop-blur">
-                {FAQS.map((faq) => (
+                {home.faqs.map((faq) => (
                   <AccordionItem key={faq.pregunta} value={faq.pregunta} className="border-border/60 py-1.5">
                     <AccordionTrigger className="py-4 text-base font-heading font-semibold hover:no-underline">
                       {faq.pregunta}
@@ -450,11 +419,64 @@ export default function HomePage() {
             </Button>
           </Reveal>
         </section>
+
+        {/* Transparencia e integración con Google (requisito de verificación OAuth) */}
+        <section className="border-t border-border/60 bg-card/20 py-14">
+          <div className="mx-auto max-w-4xl px-6">
+            <div className="rounded-2xl border border-border/60 bg-card/50 p-6 backdrop-blur sm:p-8">
+              <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-primary">
+                <ShieldCheck className="size-4" />
+                <span>Seguridad, privacidad e integración con Google</span>
+              </div>
+              <h2 className="mt-2 font-heading text-lg font-semibold tracking-tight">
+                Cómo utiliza EditFlow tus datos de Google
+              </h2>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                EditFlow es una plataforma operada por <strong className="text-foreground">Lian Films Studio</strong>{" "}
+                para que agencias y productoras organicen clientes, flujos de edición de video, calendario y
+                productividad mensual de su equipo. La conexión con Google es opcional y solo solicita permisos
+                para funciones autorizadas directamente por ti:
+              </p>
+              <ul className="mt-3 space-y-1.5 text-sm text-muted-foreground">
+                <li>
+                  <strong className="text-foreground">Inicio de sesión con Google:</strong> usamos tu nombre y
+                  correo para crear o acceder a tu cuenta sin contraseñas.
+                </li>
+                <li>
+                  <strong className="text-foreground">Google Calendar y Google Meet:</strong> creamos reuniones
+                  con enlace de Meet cuando agendas desde EditFlow e importamos únicamente eventos marcados con
+                  la palabra clave <code className="text-xs text-foreground">Flow</code>. No leemos ni modificamos
+                  otros eventos de tu calendario.
+                </li>
+              </ul>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                El uso y la transferencia de información recibida de las APIs de Google cumple con la{" "}
+                <a
+                  href="https://developers.google.com/terms/api-services-user-data-policy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline underline-offset-2"
+                >
+                  Google API Services User Data Policy
+                </a>
+                , incluidos los requisitos de Uso Limitado. Consulta todos los detalles en nuestra{" "}
+                <Link href="/privacidad" className="text-primary underline underline-offset-2">
+                  Política de Privacidad
+                </Link>{" "}
+                y{" "}
+                <Link href="/terminos" className="text-primary underline underline-offset-2">
+                  Condiciones del Servicio
+                </Link>
+                .
+              </p>
+            </div>
+          </div>
+        </section>
       </main>
 
       <footer className="border-t border-border/60 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 text-sm text-muted-foreground md:flex-row">
-          <span>© {new Date().getFullYear()} EditFlow · Hecho para productoras y creadores de contenido</span>
+          <span>© {new Date().getFullYear()} {site.brandName || SITE_NAME} · {home.footerText}</span>
           <LegalLinks />
         </div>
       </footer>

@@ -2,7 +2,6 @@
 
 import { useActionState, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 import {
@@ -26,6 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { updateClient, deleteClient, type ActionResult } from "@/lib/actions/clients";
 import { ClientBriefFields } from "@/components/clients/client-brief-fields";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 
 const INITIAL_STATE: ActionResult = { ok: true };
 
@@ -77,11 +77,13 @@ export function EditClientSheet({
   const [state, formAction] = useActionState(async (_prev: ActionResult, fd: FormData) => {
     if (!client) return INITIAL_STATE;
     const result = await updateClient(client.id, fd);
-    if (result.ok) onOpenChange(false);
+    if (result.ok) {
+      markLocalMutation();
+      onOpenChange(false);
+    }
     return result;
   }, INITIAL_STATE);
 
-  const router = useRouter();
   const [isDeleting, startDelete] = useTransition();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -90,10 +92,10 @@ export function EditClientSheet({
     startDelete(async () => {
       const result = await deleteClient(client.id);
       if (result.ok) {
+        markLocalMutation();
         toast.success("Cliente eliminado");
         setConfirmingDelete(false);
         onOpenChange(false);
-        router.refresh();
       } else {
         toast.error(result.error);
       }

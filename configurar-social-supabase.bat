@@ -4,12 +4,11 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo   EditFlow - Autoconfigurador de Supabase (Google y Facebook)
+echo   EditFlow - Autoconfigurador de Supabase (Google OAuth)
 echo ============================================================
 echo.
 echo Este script lee tu .env.local y configura automaticamente en Supabase:
 echo   - Google OAuth (Client ID y Secret de .env.local)
-echo   - Facebook OAuth (si ingresas App ID y App Secret)
 echo   - Site URL y Redirect URL (http://localhost:3000/auth/callback)
 echo   - Allow Manual Linking (para vincular Google Calendar)
 echo.
@@ -30,14 +29,6 @@ if "%SB_TOKEN%"=="" (
 echo.
 echo Opcional - URL de produccion en Vercel o Azure (deja vacio y pulsa Enter para solo local):
 set /p "PROD_URL=URL de produccion (ej. https://tu-app.vercel.app): "
-
-echo.
-echo Facebook (opcional - deja vacio y pulsa Enter para omitir Facebook por ahora):
-set /p "FB_APP_ID=Facebook App ID: "
-set "FB_APP_SECRET="
-if not "%FB_APP_ID%"=="" (
-  set /p "FB_APP_SECRET=Facebook App Secret: "
-)
 
 :run_ps
 set "BAT_PATH=%~f0"
@@ -98,13 +89,6 @@ $projectRef = $Matches[1]
 
 $token = $env:SB_TOKEN.Trim()
 $prodUrl = if ($env:PROD_URL) { $env:PROD_URL.Trim().TrimEnd("/") } else { "" }
-$fbId = if ($env:FB_APP_ID) { $env:FB_APP_ID.Trim() } else { "" }
-$fbSecret = if ($env:FB_APP_SECRET) { $env:FB_APP_SECRET.Trim() } else { "" }
-
-if ($fbId -and -not $fbSecret) {
-  Write-Host "[ERROR] Ingresaste Facebook App ID pero dejaste vacio Facebook App Secret." -ForegroundColor Red
-  exit 1
-}
 
 $apiUrl = "https://api.supabase.com/v1/projects/$projectRef/config/auth"
 $headers = @{
@@ -154,11 +138,7 @@ if ($googleId -and $googleSecret) {
   Write-Host "[AVISO] GOOGLE_CLIENT_ID o GOOGLE_CLIENT_SECRET vacios en .env.local; se omitio Google." -ForegroundColor Yellow
 }
 
-if ($fbId -and $fbSecret) {
-  $payload["external_facebook_enabled"]   = $true
-  $payload["external_facebook_client_id"] = $fbId
-  $payload["external_facebook_secret"]    = $fbSecret
-}
+$payload["external_facebook_enabled"] = $false
 
 Write-Host "Aplicando cambios en Supabase Auth..." -ForegroundColor Cyan
 $jsonBody = $payload | ConvertTo-Json -Depth 5
@@ -190,11 +170,10 @@ Write-Host ""
 Write-Host "=== RESULTADO EN SUPABASE ===" -ForegroundColor Green
 Write-Host "  Google habilitado:       $($settings.external.google)"
 Write-Host "  Client ID Google activo: $activeGoogleClient"
-Write-Host "  Facebook habilitado:     $($settings.external.facebook)"
 Write-Host "  Site URL:                $siteUrl"
 Write-Host "  Redirect URLs:           $allowList"
 Write-Host "  Manual Linking:          True"
 Write-Host ""
-Write-Host "Recuerda en Google Cloud / Meta tener autorizada esta Callback URI:" -ForegroundColor Yellow
+Write-Host "Recuerda en Google Cloud tener autorizada esta Callback URI:" -ForegroundColor Yellow
 Write-Host "  $supabaseUrl/auth/v1/callback"
 Write-Host "Y en Google Auth Platform -> Publico -> Usuarios de prueba: tu correo Gmail." -ForegroundColor Yellow

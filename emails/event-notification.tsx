@@ -11,8 +11,9 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { emailAssetBaseUrl } from "@/lib/email/transport";
 
-const LOGO_URL = "https://editflow-gules.vercel.app/logo-mark.png";
+const LOGO_URL = `${emailAssetBaseUrl()}/logo-mark.png`;
 
 export interface EventNotificationEmailProps {
   eventTitle: string;
@@ -71,22 +72,28 @@ export default function EventNotificationEmail({
           </Section>
 
           <Text style={paragraph}>
-            {ownerName} te invitó a este evento en {organizationName}. Ya quedó en tu calendario.
+            {ownerName} te invitó a este evento en {organizationName}.
           </Text>
 
           {meetLink && (
             <Section style={{ textAlign: "center" as const, margin: "24px 0" }}>
               <Link href={meetLink} style={button}>
-                Unirse a la reunión de Meet
+                Unirse con Google Meet
               </Link>
+              <Text style={{ ...subtitle, margin: "12px 0 0", wordBreak: "break-all" as const }}>
+                Google Meet:{" "}
+                <Link href={meetLink} style={link}>
+                  {meetLink}
+                </Link>
+              </Text>
             </Section>
           )}
 
-          {googleCalendarLink && (
+          {googleCalendarLink && googleCalendarLink !== meetLink && (
             <Text style={paragraph}>
-              O ábrelo aquí:{" "}
+              Ver detalle en el calendario:{" "}
               <Link href={googleCalendarLink} style={link}>
-                {meetLink ? "enlace de la reunión" : "ver en el calendario"}
+                abrir en Google Calendar
               </Link>
             </Text>
           )}

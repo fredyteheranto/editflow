@@ -95,8 +95,7 @@ export async function createOrganization(formData: FormData): Promise<ActionResu
               access_token: session.provider_token,
               refresh_token: session.provider_refresh_token ?? undefined,
               expires_at: expiresAt,
-              scope:
-                "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.send",
+              scope: "https://www.googleapis.com/auth/calendar.events",
             },
             { onConflict: "membership_id" },
           );
@@ -107,7 +106,7 @@ export async function createOrganization(formData: FormData): Promise<ActionResu
     console.error("[createOrganization] no se pudo guardar la conexión de Google", err);
   }
 
-  redirect(await redirectTargetAfterAuth(supabase, user.id));
+  redirect(await redirectTargetAfterAuth());
 }
 
 export interface MyOrganization {

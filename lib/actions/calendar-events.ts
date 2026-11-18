@@ -1,12 +1,14 @@
 "use server";
 
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient, createServiceRoleClient, getServerUser } from "@/lib/supabase/server";
 import { requireActiveOrganization } from "@/lib/period/resolve";
 import {
   createGoogleCalendarEvent,
   createGoogleMeetingEvent,
   deleteGoogleCalendarEvent,
+  type GoogleMeetingResult,
 } from "@/lib/google/calendar";
 import { GMAIL_SEND_SCOPE } from "@/lib/google/gmail";
 import { sendEventNotificationEmail } from "@/lib/email/send-event-notification";
@@ -23,12 +25,50 @@ export interface CreateCalendarEventInput {
   videoId?: string;
   color?: string;
   assignedMembershipId?: string;
-  /** Correos invitados a la reunión (equipo o externos). Si hay alguno, el
-   *  evento se trata como reunión: un solo evento en el calendario del
-   *  creador, con todos como invitados, y Google les manda la invitación. */
+  /** Correos invitados a la reunión (equipo o externos). */
   guestEmails?: string[];
-  /** Si true, se agrega un enlace de Google Meet al evento. */
+  /** Si true (por defecto en reuniones o con invitados), crea enlace de Google Meet. */
   withMeet?: boolean;
+}
+
+export type GoogleMeetStatus =
+  | "created"
+  | "not_requested"
+  | "missing_google_connection"
+  | "google_error";
+
+export interface CreateCalendarEventResult {
+  id: string;
+  meetingUrl: string | null;
+  meetProvider: "google" | null;
+  googleMeetStatus: GoogleMeetStatus;
+  googleCalendarLink: string | null;
+  emailedCount: number;
+  failedRecipients: string[];
+}
+
+export type CalendarActionResult =
+  | {
+      ok: true;
+      meetingUrl?: string | null;
+      meetProvider?: "google" | null;
+      googleMeetStatus?: GoogleMeetStatus;
+      googleCalendarLink?: string | null;
+      emailedCount?: number;
+      failedRecipients?: string[];
+    }
+  | { ok: false; error: string };
+
+export interface UpdateCalendarEventInput extends CreateCalendarEventInput {
+  id: string;
+}
+
+interface Miembro {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  notify_calendar: boolean;
 }
 
 function formatDateTimeEs(iso: string, timezone: string) {
@@ -48,411 +88,699 @@ function formatDateTimeEs(iso: string, timezone: string) {
   return { dateLabel, timeLabel };
 }
 
-interface Miembro {
-  id: string;
-  email: string;
-  full_name: string | null;
-  role: string;
-  notify_calendar: boolean;
-}
-
 function dedupAsistentes(lista: (Miembro | undefined)[]): Miembro[] {
   return lista.filter(
-    (m, i, arr): m is Miembro => Boolean(m) && arr.findIndex((x) => x?.email === m?.email) === i,
+    (m, i, arr): m is Miembro =>
+      Boolean(m) && arr.findIndex((x) => x?.email.toLowerCase() === m?.email.toLowerCase()) === i,
   );
 }
 
 function normalizarInvitados(guestEmails?: string[]): string[] {
+  const tokens = (guestEmails ?? []).flatMap((entry) => entry.split(/[\s,;]+/));
   return Array.from(
-    new Set((guestEmails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean)),
+    new Set(
+      tokens
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes("@")),
+    ),
   );
 }
 
+function resolveCreatorMember(
+  miembros: Miembro[] | null,
+  membershipId: string,
+  userEmail?: string | null,
+): Miembro | undefined {
+  if (!miembros) return undefined;
+  return (
+    miembros.find((m) => m.id === membershipId) ??
+    (userEmail
+      ? miembros.find((m) => m.email.toLowerCase() === userEmail.toLowerCase())
+      : undefined)
+  );
+}
+
+function buildAttendeeRows(params: {
+  eventId: string;
+  miembros: Miembro[];
+  asistentesEquipo: Miembro[];
+  invitados: string[];
+  esReunion: boolean;
+}) {
+  const memberByEmail = new Map(params.miembros.map((m) => [m.email.toLowerCase(), m]));
+  const rowsByEmail = new Map<
+    string,
+    { event_id: string; membership_id?: string; email: string; notify: boolean }
+  >();
+
+  for (const m of params.asistentesEquipo) {
+    const key = m.email.toLowerCase();
+    rowsByEmail.set(key, {
+      event_id: params.eventId,
+      membership_id: m.id,
+      email: m.email,
+      notify: params.esReunion ? false : m.notify_calendar,
+    });
+  }
+
+  for (const email of params.invitados) {
+    if (rowsByEmail.has(email)) continue;
+    const matchedMember = memberByEmail.get(email);
+    rowsByEmail.set(email, {
+      event_id: params.eventId,
+      ...(matchedMember ? { membership_id: matchedMember.id } : {}),
+      email,
+      notify: false,
+    });
+  }
+
+  return Array.from(rowsByEmail.values());
+}
+
 /**
- * Crea el evento en EditFlow y lo sincroniza con Google de una de dos formas:
- *
- * - REUNIÓN (tiene invitados y/o Meet): un solo evento en el calendario del
- *   creador con todos los correos como invitados y, si se pidió, un enlace de
- *   Google Meet. Google le manda la invitación a cada correo (sirve para
- *   gente externa; no necesitan conectar nada).
- * - EVENTO NORMAL (sin invitados): se escribe una copia en el calendario
- *   propio de cada miembro asistente conectado, y se avisa por correo.
+ * Busca qué miembro (creador primero; si no tiene Google conectado, owner o
+ * algún admin del mismo espacio) tiene token de Google Calendar activo.
  */
-export async function createCalendarEvent(input: CreateCalendarEventInput) {
-  const org = await requireActiveOrganization();
+async function resolveGoogleCalendarOrganizerId(
+  admin: ReturnType<typeof createServiceRoleClient>,
+  organizationId: string,
+  miembros: Miembro[],
+  preferredMembershipId?: string,
+): Promise<string | null> {
+  const { data: orgTokens } = await admin
+    .from("google_oauth_tokens")
+    .select("membership_id")
+    .eq("organization_id", organizationId);
+
+  if (!orgTokens || orgTokens.length === 0) return null;
+  const connectedIds = new Set(orgTokens.map((t) => t.membership_id));
+
+  if (preferredMembershipId && connectedIds.has(preferredMembershipId)) {
+    return preferredMembershipId;
+  }
+
+  const fallbackOwnerOrAdmin = miembros.find(
+    (m) => (m.role === "owner" || m.role === "admin") && connectedIds.has(m.id),
+  );
+  return fallbackOwnerOrAdmin?.id ?? null;
+}
+
+async function resolveGoogleMeetingForEvent(params: {
+  admin: ReturnType<typeof createServiceRoleClient>;
+  organizationId: string;
+  eventId: string;
+  miembros: Miembro[];
+  organizer?: Miembro;
+  title: string;
+  description?: string;
+  startAt: string;
+  endAt: string;
+  timeZone: string;
+  invitationEmails: string[];
+  wantsMeet: boolean;
+  existingGoogleMeetUrl?: string | null;
+}): Promise<{
+  meetingUrl: string | null;
+  googleHtmlLink: string | null;
+  meetProvider: "google" | null;
+  googleMeetStatus: GoogleMeetStatus;
+}> {
+  const googleOrganizerId = await resolveGoogleCalendarOrganizerId(
+    params.admin,
+    params.organizationId,
+    params.miembros,
+    params.organizer?.id,
+  );
+
+  if (!googleOrganizerId) {
+    const preserved =
+      params.wantsMeet && params.existingGoogleMeetUrl?.includes("meet.google.com")
+        ? params.existingGoogleMeetUrl
+        : null;
+    return {
+      meetingUrl: preserved,
+      googleHtmlLink: null,
+      meetProvider: preserved ? "google" : null,
+      googleMeetStatus: params.wantsMeet
+        ? preserved
+          ? "created"
+          : "missing_google_connection"
+        : "not_requested",
+    };
+  }
+
+  let googleMeeting: GoogleMeetingResult | null = null;
+  let apiFailed = false;
+
+  try {
+    googleMeeting = await createGoogleMeetingEvent(googleOrganizerId, {
+      title: params.title,
+      description: params.description,
+      startAt: params.startAt,
+      endAt: params.endAt,
+      timeZone: params.timeZone,
+      attendeeEmails: params.invitationEmails,
+      withMeet: params.wantsMeet,
+    });
+    if (!googleMeeting) apiFailed = true;
+  } catch (err) {
+    apiFailed = true;
+    console.warn("[calendar] Error al crear evento en Google Calendar/Meet:", err);
+  }
+
+  const preservedGoogleUrl =
+    params.wantsMeet && params.existingGoogleMeetUrl?.includes("meet.google.com")
+      ? params.existingGoogleMeetUrl
+      : null;
+
+  const meetingUrl = googleMeeting?.meetLink ?? preservedGoogleUrl ?? null;
+
+  await params.admin
+    .from("calendar_events")
+    .update({
+      ...(googleMeeting
+        ? {
+            google_event_id: googleMeeting.googleEventId,
+            google_html_link: googleMeeting.htmlLink,
+            google_organizer_membership_id: googleOrganizerId,
+          }
+        : {}),
+      meeting_url: meetingUrl,
+    })
+    .eq("id", params.eventId);
+
+  const googleMeetStatus: GoogleMeetStatus = !params.wantsMeet
+    ? "not_requested"
+    : meetingUrl
+      ? "created"
+      : apiFailed
+        ? "google_error"
+        : "missing_google_connection";
+
+  return {
+    meetingUrl,
+    googleHtmlLink: googleMeeting?.htmlLink ?? null,
+    meetProvider: meetingUrl ? "google" : null,
+    googleMeetStatus,
+  };
+}
+
+async function dispatchEventInvitations(params: {
+  admin: ReturnType<typeof createServiceRoleClient>;
+  organizationName: string;
+  creator?: Miembro;
+  fallbackSenderEmail?: string | null;
+  asignado?: Miembro;
+  recipientEmails: string[];
+  eventTitle: string;
+  eventType: string;
+  startAt: string;
+  timezone: string;
+  meetingUrl?: string | null;
+  googleHtmlLink?: string | null;
+}): Promise<{ emailedCount: number; failedRecipients: string[] }> {
+  const uniqueEmails = Array.from(
+    new Set(params.recipientEmails.map((e) => e.trim().toLowerCase()).filter(Boolean)),
+  );
+  if (uniqueEmails.length === 0) {
+    return { emailedCount: 0, failedRecipients: [] };
+  }
+
+  let gmailSendAvailable = false;
+  if (params.creator) {
+    const { data: creatorConn } = await params.admin
+      .from("google_oauth_tokens")
+      .select("scope")
+      .eq("membership_id", params.creator.id)
+      .maybeSingle();
+    gmailSendAvailable = Boolean(creatorConn?.scope?.includes(GMAIL_SEND_SCOPE));
+  }
+
+  const { dateLabel, timeLabel } = formatDateTimeEs(params.startAt, params.timezone);
+  const eventTypeLabel = EVENT_TYPE_LABEL[params.eventType] ?? params.eventType;
+  const senderEmail = params.creator?.email ?? params.fallbackSenderEmail ?? "";
+  const ownerName = params.creator?.full_name ?? (senderEmail || params.organizationName);
+
+  const results = await Promise.all(
+    uniqueEmails.map(async (email) => {
+      try {
+        const res = await sendEventNotificationEmail({
+          to: email,
+          senderMembershipId: params.creator?.id ?? "",
+          senderEmail,
+          gmailSendAvailable,
+          ownerName,
+          organizationName: params.organizationName,
+          eventTitle: params.eventTitle,
+          eventTypeLabel,
+          dateLabel,
+          timeLabel,
+          recipientIsOwner: false,
+          assignedToName: params.asignado?.full_name ?? params.asignado?.email,
+          meetLink: params.meetingUrl ?? undefined,
+          googleCalendarLink: params.googleHtmlLink ?? undefined,
+        });
+        return { email, sent: res.transport !== "none" };
+      } catch (err) {
+        console.error(`[calendar] Fallo al enviar invitación a ${email}:`, err);
+        return { email, sent: false };
+      }
+    }),
+  );
+
+  const emailedCount = results.filter((r) => r.sent).length;
+  const failedRecipients = results.filter((r) => !r.sent).map((r) => r.email);
+  return { emailedCount, failedRecipients };
+}
+
+/**
+ * Crea el evento en EditFlow, crea la reunión en Google Calendar con Google
+ * Meet (si hay conexión Google en el espacio) y envía la notificación por
+ * correo a todos los invitados y al responsable.
+ */
+export async function createCalendarEvent(
+  input: CreateCalendarEventInput,
+): Promise<CreateCalendarEventResult> {
+  const [org, user] = await Promise.all([requireActiveOrganization(), getServerUser()]);
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const { data: event, error: insertError } = await supabase
-    .from("calendar_events")
-    .insert({
-      organization_id: org.id,
-      title: input.title,
-      description: input.description,
-      type: input.type as EventType,
-      client_id: input.clientId,
-      video_id: input.videoId,
-      start_at: input.startAt,
-      end_at: input.endAt,
-      color: input.color,
-    })
-    .select("id")
-    .single();
+  const [{ data: event, error: insertError }, { data: miembrosRaw }] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .insert({
+        organization_id: org.id,
+        title: input.title,
+        description: input.description,
+        type: input.type as EventType,
+        client_id: input.clientId,
+        video_id: input.videoId,
+        start_at: input.startAt,
+        end_at: input.endAt,
+        color: input.color,
+      })
+      .select("id")
+      .single(),
+    supabase
+      .from("memberships")
+      .select("id, email, full_name, role, notify_calendar")
+      .eq("organization_id", org.id)
+      .eq("active", true),
+  ]);
 
   if (insertError || !event) {
     throw new Error(insertError?.message ?? "No se pudo crear el evento.");
   }
 
-  const { data: miembros } = await supabase
-    .from("memberships")
-    .select("id, email, full_name, role, notify_calendar")
-    .eq("organization_id", org.id)
-    .eq("active", true);
-
-  const propietario = (miembros as Miembro[] | null)?.find((m) => m.role === "owner");
+  const miembros = (miembrosRaw as Miembro[] | null) ?? [];
+  const propietario = miembros.find((m) => m.role === "owner");
   const asignado = input.assignedMembershipId
-    ? (miembros as Miembro[] | null)?.find((m) => m.id === input.assignedMembershipId)
+    ? miembros.find((m) => m.id === input.assignedMembershipId)
     : undefined;
-  const creador = (miembros as Miembro[] | null)?.find((m) => m.email === user?.email);
+  const creador = resolveCreatorMember(miembros, org.membershipId, user?.email);
 
   const invitados = normalizarInvitados(input.guestEmails);
-  const esReunion = invitados.length > 0 || Boolean(input.withMeet);
+  const wantsMeet = input.withMeet ?? (input.type === "reunion" || invitados.length > 0);
+  const esReunion = invitados.length > 0 || wantsMeet || input.type === "reunion";
+  const asistentesEquipo = dedupAsistentes([propietario, asignado]);
 
-  // Recordatorio por correo 60 minutos antes — lo procesa el cron de reminders.
-  await supabase.from("event_reminders").insert({ event_id: event.id, minutes_before: 60 });
+  const attendeeRows = buildAttendeeRows({
+    eventId: event.id,
+    miembros,
+    asistentesEquipo,
+    invitados,
+    esReunion,
+  });
 
-  // Notificación en la app SOLO para los correos agregados como invitados al
-  // evento que correspondan a un miembro del equipo. Quien no esté en la
-  // lista de invitados no recibe ninguna notificación (ni app ni correo). Se
-  // inserta con service role porque la fila es para OTRO usuario.
-  const invitadosMiembros = ((miembros as Miembro[] | null) ?? []).filter(
-    (m) => invitados.includes(m.email.toLowerCase()) && m.id !== creador?.id,
+  const notificarMiembros = miembros.filter(
+    (m) =>
+      m.id !== creador?.id &&
+      (invitados.includes(m.email.toLowerCase()) || (asignado && m.id === asignado.id)),
   );
-  if (invitadosMiembros.length > 0) {
+
+  const admin = createServiceRoleClient();
+  const dbWrites: PromiseLike<unknown>[] = [
+    supabase.from("event_reminders").insert({ event_id: event.id, minutes_before: 60 }),
+  ];
+
+  if (notificarMiembros.length > 0) {
     const { dateLabel, timeLabel } = formatDateTimeEs(input.startAt, org.timezone);
     const tipoLabel = EVENT_TYPE_LABEL[input.type] ?? input.type;
-    const admin = createServiceRoleClient();
-    const { error: notifError } = await admin.from("notifications").insert(
-      invitadosMiembros.map((m) => ({
-        organization_id: org.id,
-        recipient_email: m.email,
-        membership_id: m.id,
-        type: "calendar_event",
-        title: `Nuevo evento: ${input.title}`,
-        body: `${tipoLabel} · ${dateLabel} a las ${timeLabel}`,
-        link: "/app/calendario",
-      })),
+    dbWrites.push(
+      admin.from("notifications").insert(
+        notificarMiembros.map((m) => ({
+          organization_id: org.id,
+          recipient_email: m.email,
+          membership_id: m.id,
+          type: "calendar_event",
+          title: `Nuevo evento: ${input.title}`,
+          body: `${tipoLabel} · ${dateLabel} a las ${timeLabel}`,
+          link: "/app/calendario",
+        })),
+      ),
     );
-    if (notifError) console.error("No se pudo crear la notificación del evento", notifError.message);
   }
 
+  if (attendeeRows.length > 0) {
+    dbWrites.push(supabase.from("event_attendees").insert(attendeeRows));
+  }
+
+  await Promise.all(dbWrites);
+
+  const creatorEmail = creador?.email.toLowerCase() ?? user?.email?.toLowerCase() ?? "";
+  const invitationEmails = Array.from(
+    new Set(
+      [
+        ...invitados,
+        ...(asignado && asignado.id !== creador?.id && (esReunion || asignado.notify_calendar)
+          ? [asignado.email.toLowerCase()]
+          : []),
+      ].filter((e) => e && e !== creatorEmail),
+    ),
+  );
+
   if (esReunion) {
-    const asistentesEquipo = dedupAsistentes([propietario, asignado]);
-    // Guarda asistentes del equipo (con membership) y los invitados externos
-    // (sin membership) para poder mostrarlos y editarlos después.
-    const emailsEquipo = new Set(asistentesEquipo.map((m) => m.email.toLowerCase()));
-    const filas = [
-      ...asistentesEquipo.map((m) => ({ event_id: event.id, membership_id: m.id, email: m.email, notify: false })),
-      ...invitados
-        .filter((e) => !emailsEquipo.has(e))
-        .map((e) => ({ event_id: event.id, email: e, notify: false })),
-    ];
-    if (filas.length > 0) {
-      await supabase.from("event_attendees").insert(filas);
-    }
-
-    if (creador) {
-      // Invitados a notificar (los correos agregados), sin el creador.
-      const invitacion = invitados.filter((e) => e !== creador.email.toLowerCase());
-
-      const meeting = await createGoogleMeetingEvent(creador.id, {
+    const { meetingUrl, googleHtmlLink, meetProvider, googleMeetStatus } =
+      await resolveGoogleMeetingForEvent({
+        admin,
+        organizationId: org.id,
+        eventId: event.id,
+        miembros,
+        organizer: creador,
         title: input.title,
         description: input.description,
         startAt: input.startAt,
         endAt: input.endAt,
         timeZone: org.timezone,
-        attendeeEmails: invitacion,
-        withMeet: Boolean(input.withMeet),
+        invitationEmails,
+        wantsMeet,
       });
 
-      if (meeting) {
-        await supabase
-          .from("calendar_events")
-          .update({
-            google_event_id: meeting.googleEventId,
-            google_html_link: meeting.htmlLink,
-            meeting_url: meeting.meetLink,
-            google_organizer_membership_id: creador.id,
-          })
-          .eq("id", event.id);
-      }
-
-      // El correo lo manda EditFlow (no Google) para que el asunto sea
-      // "EditFlow · <evento>". Va a cada invitado, con el enlace de Meet.
-      const { data: creatorConn } = await supabase
-        .from("google_oauth_tokens")
-        .select("scope")
-        .eq("membership_id", creador.id)
-        .maybeSingle();
-      const gmailSendAvailable = Boolean(creatorConn?.scope?.includes(GMAIL_SEND_SCOPE));
-      const { dateLabel, timeLabel } = formatDateTimeEs(input.startAt, org.timezone);
-      const eventTypeLabel = EVENT_TYPE_LABEL[input.type] ?? input.type;
-      const enlace = meeting?.meetLink ?? meeting?.htmlLink ?? undefined;
-
-      await Promise.all(
-        invitacion.map((email) =>
-          sendEventNotificationEmail({
-            to: email,
-            senderMembershipId: creador.id,
-            senderEmail: creador.email,
-            gmailSendAvailable,
-            ownerName: creador.full_name ?? creador.email,
-            organizationName: org.name,
-            eventTitle: input.title,
-            eventTypeLabel,
-            dateLabel,
-            timeLabel,
-            recipientIsOwner: false,
-            assignedToName: asignado?.full_name ?? asignado?.email,
-            meetLink: meeting?.meetLink ?? undefined,
-            googleCalendarLink: enlace,
-          }).catch((err) => {
-            console.error(`No se pudo enviar el correo del evento a ${email}`, err);
-          }),
-        ),
-      );
-    }
+    const { emailedCount, failedRecipients } = await dispatchEventInvitations({
+      admin,
+      organizationName: org.name,
+      creator: creador,
+      fallbackSenderEmail: user?.email,
+      asignado,
+      recipientEmails: invitationEmails,
+      eventTitle: input.title,
+      eventType: input.type,
+      startAt: input.startAt,
+      timezone: org.timezone,
+      meetingUrl,
+      googleHtmlLink,
+    });
 
     revalidatePath("/app/calendario");
-    return { id: event.id };
+    revalidatePath("/app/dashboard");
+    return {
+      id: event.id,
+      meetingUrl,
+      meetProvider,
+      googleMeetStatus,
+      googleCalendarLink: googleHtmlLink,
+      emailedCount,
+      failedRecipients,
+    };
   }
 
-  // ----- Evento normal: espejo por-miembro + correos de aviso -----
-  const asistentes = dedupAsistentes([propietario, asignado]);
-
-  if (asistentes.length > 0) {
-    await supabase.from("event_attendees").insert(
-      asistentes.map((m) => ({
-        event_id: event.id,
-        membership_id: m.id,
-        email: m.email,
-        notify: m.notify_calendar,
-      })),
-    );
+  // ----- Evento normal: espejo a Google Calendar + correo si aplica -----
+  let emailedCount = 0;
+  let failedRecipients: string[] = [];
+  if (invitationEmails.length > 0) {
+    const dispatched = await dispatchEventInvitations({
+      admin,
+      organizationName: org.name,
+      creator: creador,
+      fallbackSenderEmail: user?.email,
+      asignado,
+      recipientEmails: invitationEmails,
+      eventTitle: input.title,
+      eventType: input.type,
+      startAt: input.startAt,
+      timezone: org.timezone,
+    });
+    emailedCount = dispatched.emailedCount;
+    failedRecipients = dispatched.failedRecipients;
   }
 
-  const googleEvent = {
-    title: input.title,
-    description: input.description,
-    startAt: input.startAt,
-    endAt: input.endAt,
-    timeZone: org.timezone,
-  };
-  // Espejo del evento en el calendario propio de cada asistente conectado.
-  // No se manda correo ni notificación acá: sin invitados, nadie recibe
-  // aviso (solo aparece el evento en el calendario de quien corresponde).
-  await Promise.all(
-    asistentes.map(async (m) => {
-      const r = await createGoogleCalendarEvent(m.id, googleEvent);
-      if (r) {
-        await supabase
-          .from("event_attendees")
-          .update({ google_event_id: r.googleEventId, google_html_link: r.htmlLink })
-          .eq("event_id", event.id)
-          .eq("membership_id", m.id);
-      }
-    }),
-  );
+  if (asistentesEquipo.length > 0) {
+    const googleEvent = {
+      title: input.title,
+      description: input.description,
+      startAt: input.startAt,
+      endAt: input.endAt,
+      timeZone: org.timezone,
+    };
+    after(async () => {
+      const bgAdmin = createServiceRoleClient();
+      await Promise.all(
+        asistentesEquipo.map(async (m) => {
+          try {
+            const r = await createGoogleCalendarEvent(m.id, googleEvent);
+            if (r) {
+              await bgAdmin
+                .from("event_attendees")
+                .update({ google_event_id: r.googleEventId, google_html_link: r.htmlLink })
+                .eq("event_id", event.id)
+                .eq("membership_id", m.id);
+            }
+          } catch (err) {
+            console.warn("[calendar] No se pudo reflejar evento en Google Calendar:", err);
+          }
+        }),
+      );
+    });
+  }
 
   revalidatePath("/app/calendario");
-  return { id: event.id };
-}
-
-export type CalendarActionResult = { ok: true } | { ok: false; error: string };
-
-export interface UpdateCalendarEventInput extends CreateCalendarEventInput {
-  id: string;
+  revalidatePath("/app/dashboard");
+  return {
+    id: event.id,
+    meetingUrl: null,
+    meetProvider: null,
+    googleMeetStatus: "not_requested",
+    googleCalendarLink: null,
+    emailedCount,
+    failedRecipients,
+  };
 }
 
 /**
- * Actualiza el evento. Borra los espejos/reunión viejos de Google y los
- * recrea según el nuevo estado (reunión o evento normal). No reenvía el
- * correo de aviso de los eventos normales (solo al crear).
+ * Actualiza el evento, recrea o mantiene su Google Meet y envía notificación
+ * por correo a los invitados agregados (o a todos si se generó el Meet).
  */
-export async function updateCalendarEvent(input: UpdateCalendarEventInput): Promise<CalendarActionResult> {
-  const org = await requireActiveOrganization();
+export async function updateCalendarEvent(
+  input: UpdateCalendarEventInput,
+): Promise<CalendarActionResult> {
+  const [org, user] = await Promise.all([requireActiveOrganization(), getServerUser()]);
   if (org.role !== "owner" && org.role !== "admin") {
     return { ok: false, error: "No tienes permiso para editar eventos." };
   }
 
   const supabase = await createClient();
 
-  const { data: existing } = await supabase
-    .from("calendar_events")
-    .select("id, google_event_id, google_organizer_membership_id")
-    .eq("id", input.id)
-    .eq("organization_id", org.id)
-    .maybeSingle();
+  const [{ data: existing }, { data: espejosViejos }, { data: miembrosRaw }] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .select("id, meeting_url, google_event_id, google_organizer_membership_id")
+      .eq("id", input.id)
+      .eq("organization_id", org.id)
+      .maybeSingle(),
+    supabase
+      .from("event_attendees")
+      .select("membership_id, email, google_event_id")
+      .eq("event_id", input.id),
+    supabase
+      .from("memberships")
+      .select("id, email, full_name, role, notify_calendar")
+      .eq("organization_id", org.id)
+      .eq("active", true),
+  ]);
 
   if (!existing) {
     return { ok: false, error: "El evento no existe." };
   }
 
-  // Espejos por-miembro viejos (uno por asistente en su propio calendario).
-  const { data: espejosViejos } = await supabase
-    .from("event_attendees")
-    .select("membership_id, google_event_id")
-    .eq("event_id", input.id);
+  const oldAttendeeEmails = new Set(
+    (espejosViejos ?? []).map((a) => a.email.toLowerCase()),
+  );
 
-  const { error: updateError } = await supabase
-    .from("calendar_events")
-    .update({
-      title: input.title,
-      description: input.description,
-      type: input.type as EventType,
-      client_id: input.clientId ?? null,
-      video_id: input.videoId ?? null,
-      start_at: input.startAt,
-      end_at: input.endAt,
-      color: input.color,
-      // se recalculan abajo según el nuevo estado
-      google_event_id: null,
-      google_html_link: null,
-      meeting_url: null,
-      google_organizer_membership_id: null,
-    })
-    .eq("id", input.id);
+  const [{ error: updateError }] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .update({
+        title: input.title,
+        description: input.description,
+        type: input.type as EventType,
+        client_id: input.clientId ?? null,
+        video_id: input.videoId ?? null,
+        start_at: input.startAt,
+        end_at: input.endAt,
+        color: input.color,
+        google_event_id: null,
+        google_html_link: null,
+        meeting_url: null,
+        google_organizer_membership_id: null,
+      })
+      .eq("id", input.id),
+    supabase.from("event_attendees").delete().eq("event_id", input.id),
+    supabase.from("event_reminders").delete().eq("event_id", input.id),
+  ]);
 
   if (updateError) {
     return { ok: false, error: updateError.message };
   }
 
-  const { data: miembros } = await supabase
-    .from("memberships")
-    .select("id, email, full_name, role, notify_calendar")
-    .eq("organization_id", org.id)
-    .eq("active", true);
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const propietario = (miembros as Miembro[] | null)?.find((m) => m.role === "owner");
+  const miembros = (miembrosRaw as Miembro[] | null) ?? [];
+  const propietario = miembros.find((m) => m.role === "owner");
   const asignado = input.assignedMembershipId
-    ? (miembros as Miembro[] | null)?.find((m) => m.id === input.assignedMembershipId)
+    ? miembros.find((m) => m.id === input.assignedMembershipId)
     : undefined;
-  const creador = (miembros as Miembro[] | null)?.find((m) => m.email === user?.email);
-
-  // Borra la reunión vieja de Google (si la había) notificando la cancelación.
-  if (existing.google_event_id && existing.google_organizer_membership_id) {
-    await deleteGoogleCalendarEvent(
-      existing.google_organizer_membership_id,
-      existing.google_event_id,
-      true,
-    );
-  }
-  // Borra los espejos por-miembro viejos del calendario de cada quien.
-  await Promise.all(
-    (espejosViejos ?? [])
-      .filter((a): a is { membership_id: string; google_event_id: string } =>
-        Boolean(a.membership_id && a.google_event_id),
-      )
-      .map((a) => deleteGoogleCalendarEvent(a.membership_id, a.google_event_id)),
-  );
+  const creador = resolveCreatorMember(miembros, org.membershipId, user?.email);
 
   const invitados = normalizarInvitados(input.guestEmails);
-  const esReunion = invitados.length > 0 || Boolean(input.withMeet);
+  const wantsMeet = input.withMeet ?? (input.type === "reunion" || invitados.length > 0);
+  const esReunion = invitados.length > 0 || wantsMeet || input.type === "reunion";
   const asistentesEquipo = dedupAsistentes([propietario, asignado]);
 
-  // Reemplaza los asistentes.
-  await supabase.from("event_attendees").delete().eq("event_id", input.id);
+  const attendeeRows = buildAttendeeRows({
+    eventId: input.id,
+    miembros,
+    asistentesEquipo,
+    invitados,
+    esReunion,
+  });
 
-  // Reemplaza el recordatorio pendiente a la nueva hora.
-  await supabase.from("event_reminders").delete().eq("event_id", input.id);
-  await supabase.from("event_reminders").insert({ event_id: input.id, minutes_before: 60 });
+  await Promise.all([
+    supabase.from("event_reminders").insert({ event_id: input.id, minutes_before: 60 }),
+    attendeeRows.length > 0
+      ? supabase.from("event_attendees").insert(attendeeRows)
+      : Promise.resolve(null),
+  ]);
+
+  const admin = createServiceRoleClient();
+  const creatorEmail = creador?.email.toLowerCase() ?? user?.email?.toLowerCase() ?? "";
+  const allInvitees = Array.from(
+    new Set(
+      [
+        ...invitados,
+        ...(asignado && asignado.id !== creador?.id && esReunion
+          ? [asignado.email.toLowerCase()]
+          : []),
+      ].filter((e) => e && e !== creatorEmail),
+    ),
+  );
+
+  let meetingUrl: string | null = null;
+  let googleHtmlLink: string | null = null;
+  let meetProvider: "google" | null = null;
+  let googleMeetStatus: GoogleMeetStatus = "not_requested";
 
   if (esReunion) {
-    const emailsEquipo = new Set(asistentesEquipo.map((m) => m.email.toLowerCase()));
-    const filas = [
-      ...asistentesEquipo.map((m) => ({ event_id: input.id, membership_id: m.id, email: m.email, notify: false })),
-      ...invitados
-        .filter((e) => !emailsEquipo.has(e))
-        .map((e) => ({ event_id: input.id, email: e, notify: false })),
-    ];
-    if (filas.length > 0) {
-      await supabase.from("event_attendees").insert(filas);
+    const resolved = await resolveGoogleMeetingForEvent({
+      admin,
+      organizationId: org.id,
+      eventId: input.id,
+      miembros,
+      organizer: creador,
+      title: input.title,
+      description: input.description,
+      startAt: input.startAt,
+      endAt: input.endAt,
+      timeZone: org.timezone,
+      invitationEmails: allInvitees,
+      wantsMeet,
+      existingGoogleMeetUrl: existing.meeting_url,
+    });
+    meetingUrl = resolved.meetingUrl;
+    googleHtmlLink = resolved.googleHtmlLink;
+    meetProvider = resolved.meetProvider;
+    googleMeetStatus = resolved.googleMeetStatus;
+  }
+
+  const newlyAddedOrMeetActivated = allInvitees.filter(
+    (email) =>
+      !oldAttendeeEmails.has(email) ||
+      (Boolean(meetingUrl) && !existing.meeting_url?.includes("meet.google.com")),
+  );
+
+  const { emailedCount, failedRecipients } = await dispatchEventInvitations({
+    admin,
+    organizationName: org.name,
+    creator: creador,
+    fallbackSenderEmail: user?.email,
+    asignado,
+    recipientEmails: newlyAddedOrMeetActivated,
+    eventTitle: input.title,
+    eventType: input.type,
+    startAt: input.startAt,
+    timezone: org.timezone,
+    meetingUrl,
+    googleHtmlLink,
+  });
+
+  after(async () => {
+    const deletes: Promise<unknown>[] = (espejosViejos ?? [])
+      .filter((a): a is { membership_id: string; email: string; google_event_id: string } =>
+        Boolean(a.membership_id && a.google_event_id),
+      )
+      .map((a) =>
+        deleteGoogleCalendarEvent(a.membership_id, a.google_event_id).catch((err) => {
+          console.warn("[calendar] Error al eliminar espejo de Google Calendar:", err);
+        }),
+      );
+    if (existing.google_event_id && existing.google_organizer_membership_id) {
+      deletes.push(
+        deleteGoogleCalendarEvent(
+          existing.google_organizer_membership_id,
+          existing.google_event_id,
+          true,
+        ).catch((err) => {
+          console.warn("[calendar] Error al eliminar reunión previa de Google Calendar:", err);
+        }),
+      );
     }
+    await Promise.all(deletes);
 
-    if (creador) {
-      // El correo de invitación (lo manda Google con sendUpdates=all) va SOLO
-      // a los correos agregados como invitados — no al owner ni al asignado,
-      // salvo que su correo esté en la lista.
-      const invitacion = invitados.filter((e) => e !== creador.email.toLowerCase());
-
-      const meeting = await createGoogleMeetingEvent(creador.id, {
+    if (!esReunion && asistentesEquipo.length > 0) {
+      const bgAdmin = createServiceRoleClient();
+      const googleEvent = {
         title: input.title,
         description: input.description,
         startAt: input.startAt,
         endAt: input.endAt,
         timeZone: org.timezone,
-        attendeeEmails: invitacion,
-        withMeet: Boolean(input.withMeet),
-      });
-
-      if (meeting) {
-        await supabase
-          .from("calendar_events")
-          .update({
-            google_event_id: meeting.googleEventId,
-            google_html_link: meeting.htmlLink,
-            meeting_url: meeting.meetLink,
-            google_organizer_membership_id: creador.id,
-          })
-          .eq("id", input.id);
-      }
+      };
+      await Promise.all(
+        asistentesEquipo.map(async (m) => {
+          try {
+            const r = await createGoogleCalendarEvent(m.id, googleEvent);
+            if (r) {
+              await bgAdmin
+                .from("event_attendees")
+                .update({ google_event_id: r.googleEventId, google_html_link: r.htmlLink })
+                .eq("event_id", input.id)
+                .eq("membership_id", m.id);
+            }
+          } catch (err) {
+            console.warn("[calendar] Error al recrear evento normal en Google:", err);
+          }
+        }),
+      );
     }
-
-    revalidatePath("/app/calendario");
-    return { ok: true };
-  }
-
-  // ----- Evento normal: espejo por-miembro -----
-  if (asistentesEquipo.length > 0) {
-    await supabase.from("event_attendees").insert(
-      asistentesEquipo.map((m) => ({
-        event_id: input.id,
-        membership_id: m.id,
-        email: m.email,
-        notify: m.notify_calendar,
-      })),
-    );
-  }
-
-  const googleEvent = {
-    title: input.title,
-    description: input.description,
-    startAt: input.startAt,
-    endAt: input.endAt,
-    timeZone: org.timezone,
-  };
-  await Promise.all(
-    asistentesEquipo.map(async (m) => {
-      const r = await createGoogleCalendarEvent(m.id, googleEvent);
-      if (r) {
-        await supabase
-          .from("event_attendees")
-          .update({ google_event_id: r.googleEventId, google_html_link: r.htmlLink })
-          .eq("event_id", input.id)
-          .eq("membership_id", m.id);
-      }
-    }),
-  );
+  });
 
   revalidatePath("/app/calendario");
-  return { ok: true };
+  revalidatePath("/app/dashboard");
+  return {
+    ok: true,
+    meetingUrl,
+    meetProvider,
+    googleMeetStatus,
+    googleCalendarLink: googleHtmlLink,
+    emailedCount,
+    failedRecipients,
+  };
 }
 
 export async function deleteCalendarEvent(eventId: string): Promise<CalendarActionResult> {
@@ -463,44 +791,46 @@ export async function deleteCalendarEvent(eventId: string): Promise<CalendarActi
 
   const supabase = await createClient();
 
-  const { data: existing } = await supabase
-    .from("calendar_events")
-    .select("id, google_event_id, google_organizer_membership_id")
-    .eq("id", eventId)
-    .eq("organization_id", org.id)
-    .maybeSingle();
+  const [{ data: existing }, { data: espejos }] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .select("id, google_event_id, google_organizer_membership_id")
+      .eq("id", eventId)
+      .eq("organization_id", org.id)
+      .maybeSingle(),
+    supabase.from("event_attendees").select("membership_id, google_event_id").eq("event_id", eventId),
+  ]);
 
   if (!existing) {
     return { ok: false, error: "El evento no existe." };
   }
-
-  // Espejos por-miembro, para borrarlos del calendario de cada uno.
-  const { data: espejos } = await supabase
-    .from("event_attendees")
-    .select("membership_id, google_event_id")
-    .eq("event_id", eventId);
 
   const { error } = await supabase.from("calendar_events").delete().eq("id", eventId);
   if (error) {
     return { ok: false, error: error.message };
   }
 
-  // Reunión (un evento en el calendario del organizador): avisar cancelación.
-  if (existing.google_event_id && existing.google_organizer_membership_id) {
-    await deleteGoogleCalendarEvent(
-      existing.google_organizer_membership_id,
-      existing.google_event_id,
-      true,
-    );
-  }
-  await Promise.all(
-    (espejos ?? [])
+  after(async () => {
+    const deletes: Promise<unknown>[] = (espejos ?? [])
       .filter((a): a is { membership_id: string; google_event_id: string } =>
         Boolean(a.membership_id && a.google_event_id),
       )
-      .map((a) => deleteGoogleCalendarEvent(a.membership_id, a.google_event_id)),
-  );
+      .map((a) =>
+        deleteGoogleCalendarEvent(a.membership_id, a.google_event_id).catch(() => undefined),
+      );
+    if (existing.google_event_id && existing.google_organizer_membership_id) {
+      deletes.push(
+        deleteGoogleCalendarEvent(
+          existing.google_organizer_membership_id,
+          existing.google_event_id,
+          true,
+        ).catch(() => undefined),
+      );
+    }
+    await Promise.all(deletes);
+  });
 
   revalidatePath("/app/calendario");
+  revalidatePath("/app/dashboard");
   return { ok: true };
 }

@@ -10,7 +10,7 @@ import { supabaseAnonKey, supabaseUrl } from "./env";
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (!pathname.startsWith("/app")) {
+  if (!pathname.startsWith("/app") && !pathname.startsWith("/super-admin")) {
     return NextResponse.next({ request });
   }
 
@@ -33,11 +33,9 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data } = await supabase.auth.getClaims();
 
-  if (!user) {
+  if (!data?.claims?.sub) {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/crear-espacio";
     redirectUrl.searchParams.set("next", pathname);

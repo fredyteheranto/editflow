@@ -1,8 +1,6 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { importarDatos, type ImportRow } from "@/lib/actions/import-data";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 
 const SIN_COLUMNA = "__ninguna__";
 
@@ -32,7 +31,6 @@ function detectar(headers: string[], patron: RegExp): string {
 }
 
 export function ImportSheet() {
-  const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -59,8 +57,9 @@ export function ImportSheet() {
     if (!file) return;
     setNombreArchivo(file.name);
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
+        const XLSX = await import("xlsx");
         const data = new Uint8Array(ev.target?.result as ArrayBuffer);
         const wb = XLSX.read(data, { type: "array" });
         const ws = wb.Sheets[wb.SheetNames[0]];
@@ -107,12 +106,12 @@ export function ImportSheet() {
     startTransition(async () => {
       const result = await importarDatos(rows);
       if (result.ok) {
+        markLocalMutation();
         toast.success(
           `Importado: ${result.clientesCreados} cliente(s) nuevo(s), ${result.videosCreados} video(s).`,
         );
         setOpen(false);
         reset();
-        router.refresh();
       } else {
         toast.error(result.error);
       }

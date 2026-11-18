@@ -50,7 +50,7 @@ export function AccountForm({ next, modo }: { next: string; modo: "iniciar" | "a
     toast.success("Si tu correo está registrado, te enviamos un enlace para restablecer tu contraseña.");
   }
 
-  // ----- Modo ACCESO (volver a entrar): correo + contraseña o Social ID (Google/Facebook). -----
+  // ----- Modo ACCESO (volver a entrar): correo + contraseña o Google. -----
   if (modo === "acceso") {
     return (
       <div className="space-y-4">
@@ -84,13 +84,13 @@ export function AccountForm({ next, modo }: { next: string; modo: "iniciar" | "a
           </button>
         </form>
         <p className="text-center text-xs text-muted-foreground">
-          Si fuiste invitado, entra con tu correo y la contraseña que creaste (o con Google o Facebook).
+          Si fuiste invitado, entra con tu correo y tu contraseña (o con Google).
         </p>
       </div>
     );
   }
 
-  // ----- Modo INICIAR (crear espacio): enlace mágico + Social ID (Google/Facebook). -----
+  // ----- Modo INICIAR (crear espacio): enlace mágico + Google. -----
   if (mlState.status === "sent") {
     return (
       <div className="rounded-lg border bg-muted/40 p-6 text-center">
@@ -106,7 +106,7 @@ export function AccountForm({ next, modo }: { next: string; modo: "iniciar" | "a
 
   return (
     <div className="space-y-4">
-      <SocialAuthButtons next={next} withGoogleConnect />
+      <SocialAuthButtons next={next} />
       <Divider />
       <form action={mlAction} className="space-y-4">
         <input type="hidden" name="next" value={next} />

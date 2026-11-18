@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { setActivePeriod } from "@/lib/actions/periods";
 import type { ActivePeriod } from "@/lib/period/resolve";
+import { markLocalMutation } from "@/lib/realtime/local-mutation";
 
 export function PeriodSwitcher({
   periods,
@@ -32,6 +33,7 @@ export function PeriodSwitcher({
 
   function selectPeriod(periodId: string) {
     startTransition(async () => {
+      markLocalMutation();
       await setActivePeriod(periodId);
       router.refresh();
     });

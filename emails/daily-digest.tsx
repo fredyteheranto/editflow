@@ -10,6 +10,7 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import { emailAssetBaseUrl } from "@/lib/email/transport";
 
 export interface DigestKpi {
   label: string;
@@ -53,7 +54,7 @@ export default function DailyDigestEmail({
       <Body style={main}>
         <Container style={container}>
           <Img
-            src="https://editflow-gules.vercel.app/logo-mark.png"
+            src={`${emailAssetBaseUrl()}/logo-mark.png`}
             width="32"
             height="32"
             alt="EditFlow"

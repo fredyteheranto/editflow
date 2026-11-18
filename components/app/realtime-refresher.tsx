@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { isRecentLocalMutation } from "@/lib/realtime/local-mutation";
 
 // Tablas de la organización cuyos cambios deben reflejarse en vivo para todo
 // el equipo. Todas tienen organization_id, así que la suscripción se filtra a
@@ -29,11 +30,20 @@ export function RealtimeRefresher({ organizationId }: { organizationId: string }
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let pendienteAlVolver = false;
     // Nunca dejar que un problema de Realtime (WebSocket, publicación no
     // habilitada, etc.) tumbe la app: si falla, simplemente no hay refresco
     // en vivo, pero la página carga igual.
     let cleanup = () => {};
     let cancelado = false;
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible" && pendienteAlVolver) {
+        pendienteAlVolver = false;
+        router.refresh();
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     (async () => {
       try {
@@ -51,8 +61,15 @@ export function RealtimeRefresher({ organizationId }: { organizationId: string }
         if (cancelado) return;
 
         const refrescar = () => {
+          // Si el cambio vino de esta misma pestaña hace <2s, revalidatePath()
+          // de la Server Action ya actualizó el árbol RSC sin recargar de nuevo.
+          if (isRecentLocalMutation()) return;
+          if (document.visibilityState === "hidden") {
+            pendienteAlVolver = true;
+            return;
+          }
           if (timer) clearTimeout(timer);
-          timer = setTimeout(() => router.refresh(), 300);
+          timer = setTimeout(() => router.refresh(), 500);
         };
 
         const channel = supabase.channel(`org-${organizationId}`);
@@ -79,6 +96,7 @@ export function RealtimeRefresher({ organizationId }: { organizationId: string }
 
     return () => {
       cancelado = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (timer) clearTimeout(timer);
       cleanup();
     };
